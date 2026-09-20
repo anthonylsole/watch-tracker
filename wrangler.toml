@@ -1,0 +1,27 @@
+# Watch Tracker: Cloudflare Worker configuration
+#
+# The Worker name below must match the Worker name you create in the
+# Cloudflare dashboard (Import a repository step).
+name = "watch-tracker"
+main = "src/worker.js"
+compatibility_date = "2025-09-01"
+
+# Static files (the web app) are served from ./public.
+# Anything under /api/ is handled by src/worker.js.
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+# D1 database: paste the Database ID from the D1 dashboard on the line below.
+[[d1_databases]]
+binding = "DB"
+database_name = "watch-tracker-db"
+database_id = "3f28a66b-c2e6-4f40-9949-8c276825cb35"
+
+# R2 bucket for watch photos.
+[[r2_buckets]]
+binding = "IMAGES"
+bucket_name = "watch-tracker-images"
+
+[observability]
+enabled = true

@@ -1,0 +1,14 @@
+{
+  "name": "watch-tracker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Track the watches you own, sell, used to own, and want.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}
