@@ -467,7 +467,6 @@ function paintResults(sec) {
 }
 
 /* ---------- timeline ---------- */
-const DOT = { owned: '#4FBF9A', for_sale: '#E0603A', sold: '#D4A62A' };
 const compactMoney = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', notation: 'compact', maximumFractionDigits: 1 });
 let timelineOrder = 'newest';
 
@@ -555,7 +554,7 @@ function showTimeline() {
       lastYear = y;
     }
     const d = parseDay(w.purchase_date);
-    list.append(h('li', { class: 'tl-item ' + (n++ % 2 === 0 ? 'left' : 'right'), style: `--dot:${DOT[w.status]}` },
+    list.append(h('li', { class: 'tl-item ' + (n++ % 2 === 0 ? 'left' : 'right') },
       h('div', { class: 'tl-cardcell' }, tlCard(w, true)),
       h('div', { class: 'tl-mid', 'aria-hidden': 'true' }, h('span', { class: 'tl-dot' })),
       h('div', { class: 'tl-date', 'aria-hidden': 'true' },
@@ -563,13 +562,9 @@ function showTimeline() {
         h('span', { class: 'm' }, d.toLocaleDateString('en-US', { month: 'long' })))));
   }
 
-  const legend = h('ul', { class: 'tl-legend', 'aria-label': 'Legend' },
-    [['owned', 'Owned'], ['for_sale', 'For sale'], ['sold', 'Past']].map(([k, label]) =>
-      h('li', {}, h('span', { class: 'sw', style: `background:${DOT[k]}` }), label)));
-
   main.replaceChildren(...[head,
     h('section', { class: 'stats', 'aria-label': 'Summary' }, stats.map(([k, v]) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k), h('div', { class: 'v' }, v)))),
-    strip, legend, list,
+    strip, list,
     undated.length ? h('section', { class: 'undated' },
       h('h2', {}, 'No purchase date'),
       h('div', { class: 'undated-grid' }, undated.map((w) => tlCard(w, false)))) : null].filter(Boolean));
