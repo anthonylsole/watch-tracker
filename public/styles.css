@@ -118,6 +118,8 @@ select.chip option { color: #000; background: #fff; }
 .row .model { font-size: 15px; font-weight: 700; }
 .row .chev { color: var(--ink-2); }
 .m-meta, .m-pill { display: none; }
+.row-pill { margin-top: 2px; }
+.row-pill .pill { font-size: 12px; }
 .tfoot { display: flex; align-items: center; justify-content: space-between; min-height: 56px; padding: 0 16px; border-top: 1px solid var(--divider); font-size: 13px; color: var(--muted); }
 
 .thumb, .ph { border-radius: 6px; background: var(--ph); border: 1px solid var(--ph-line); color: var(--ink-2); font-size: 10px; display: flex; align-items: center; justify-content: center; overflow: hidden; }
@@ -265,7 +267,7 @@ dialog.dlg::backdrop { background: rgba(0, 0, 0, .65); }
 .field.check { flex-direction: row; align-items: center; gap: 10px; }
 .field.check input { width: 22px; min-height: 22px; height: 22px; }
 .two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-.status-pick { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; border: 0; padding: 0; margin: 0; min-width: 0; }
+.status-pick { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; border: 0; padding: 0; margin: 0; min-width: 0; }
 .status-pick label { position: relative; }
 .status-pick input { position: absolute; opacity: 0; inset: 0; }
 .status-pick span { display: flex; align-items: center; justify-content: center; min-height: 44px; border: 1px solid var(--control); border-radius: 8px; font-size: 13px; text-align: center; }

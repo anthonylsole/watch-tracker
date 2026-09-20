@@ -139,7 +139,7 @@ const priorityPill = (w) => h('span', { class: 'pill ' + (w.priority || 'medium'
 /* ---------- section configuration ---------- */
 const SECTIONS = {
   owned: {
-    key: 'owned', status: 'owned', label: 'Owned', title: 'My Watches', color: '#1E6F5C', bar: '#4FBF9A', icon: 'owned', layout: 'table',
+    key: 'owned', status: 'owned', statuses: ['owned', 'for_sale'], label: 'Owned', title: 'My Watches', color: '#1E6F5C', bar: '#4FBF9A', icon: 'owned', layout: 'table',
     empty: ['Add your first watch', 'Track what you own, what it cost, and what it is worth today.'],
     stats(ws) {
       const gains = ws.map(gainOwned).filter((g) => g !== null);
@@ -151,7 +151,7 @@ const SECTIONS = {
         ['Paper gain / loss', gains.length ? signedMoney(gain) : '—', gains.length ? (gain >= 0 ? 'pos' : 'neg') : ''],
       ];
     },
-    chips: [['all', 'All', () => true], ['box', 'Box + papers', (w) => w.has_box_papers === 1], ['service', 'Service due', isServiceDue]],
+    chips: [['all', 'All', () => true], ['sale', 'For sale', (w) => w.status === 'for_sale'], ['box', 'Box + papers', (w) => w.has_box_papers === 1], ['service', 'Service due', isServiceDue]],
     sorts: [
       ['recent', 'Recently updated', (a, b) => a._i - b._i],
       ['brand', 'Brand A–Z', by((w) => (w.brand + ' ' + w.model).toLowerCase())],
@@ -168,14 +168,15 @@ const SECTIONS = {
       ['Extras', (w) => (w.has_box_papers ? 'Box + papers' : 'Watch only')],
       ['Last serviced', (w) => fmtMonth(w.last_serviced_on)],
     ],
-    pill: null,
+    pill: (w) => (w.status === 'for_sale' ? h('span', { class: 'pill listed' }, 'For sale') : null),
+    pillInRow: true,
     mobileMeta: (w) => `${money(w.purchase_price_cents)} paid · ${money(w.est_value_cents)} est.`,
     cardVals: (w) => [`Paid ${money(w.purchase_price_cents)}`, `Est. ${money(w.est_value_cents)}`],
     cardSub: (w) => (w.has_box_papers ? 'Box + papers' : 'Watch only'),
   },
   'for-sale': {
-    key: 'for-sale', status: 'for_sale', label: 'For sale', title: 'For Sale', color: '#A72C00', bar: '#E0603A', icon: 'sale', layout: 'table',
-    empty: ['Nothing listed right now', 'When you are ready to sell a watch, open it and choose List for sale.'],
+    key: 'for-sale', status: 'for_sale', statuses: ['for_sale'], label: 'For sale', title: 'For Sale', color: '#A72C00', bar: '#E0603A', icon: 'sale', layout: 'table',
+    empty: ['Nothing listed right now', 'Open a watch you own and choose List for sale. It stays in Owned while it is listed.'],
     stats(ws) {
       const days = ws.map(daysListed).filter((d) => d !== null);
       return [
@@ -212,7 +213,7 @@ const SECTIONS = {
     cardSub: (w) => `${w.listing_platform || 'No platform yet'} · ${daysListed(w) === null ? '—' : daysListed(w)} days listed`,
   },
   past: {
-    key: 'past', status: 'sold', label: 'Past', title: 'Past Watches', color: '#9A7000', bar: '#D4A62A', icon: 'past', layout: 'table',
+    key: 'past', status: 'sold', statuses: ['sold'], label: 'Past', title: 'Past Watches', color: '#9A7000', bar: '#D4A62A', icon: 'past', layout: 'table',
     empty: ['No past watches yet', 'Watches you sell, trade, or give away will collect here with their results.'],
     stats(ws) {
       const gains = ws.map(gainSold).filter((g) => g !== null);
@@ -253,7 +254,7 @@ const SECTIONS = {
     cardSub: (w) => `${fmtMonth(w.purchase_date)} – ${fmtMonth(w.sale_date)}`,
   },
   wishlist: {
-    key: 'wishlist', status: 'wishlist', label: 'Wishlist', title: 'Wishlist', color: '#2F4E96', bar: '#7C9BE0', icon: 'wish', layout: 'grid',
+    key: 'wishlist', status: 'wishlist', statuses: ['wishlist'], label: 'Wishlist', title: 'Wishlist', color: '#2F4E96', bar: '#7C9BE0', icon: 'wish', layout: 'grid',
     empty: ['Start your wishlist', 'Save the watches you are watching, with a target price and a link.'],
     stats(ws) {
       return [
@@ -294,6 +295,14 @@ const sectionForStatus = (status) => SECTION_KEYS.map((k) => SECTIONS[k]).find((
 
 const TIMELINE = { key: 'timeline', label: 'Timeline', title: 'Timeline', color: '#8452C4', icon: 'timeline' };
 const NAV = [...SECTION_KEYS.map((k) => SECTIONS[k]), TIMELINE];
+// Where the Back link and the sidebar highlight point on a watch's page: the list the
+// person came from when that list contains the watch, otherwise its home section.
+function backTarget(w) {
+  const k = state.lastList;
+  if (k === 'timeline' && w.status !== 'wishlist') return TIMELINE;
+  if (SECTIONS[k] && SECTIONS[k].statuses.includes(w.status)) return SECTIONS[k];
+  return w.status === 'for_sale' ? SECTIONS.owned : sectionForStatus(w.status);
+}
 const navCount = (item) => (item.key === 'timeline' ? state.watches.filter((w) => w.status !== 'wishlist').length : inSection(item).length);
 
 /* ---------- state ---------- */
@@ -304,6 +313,7 @@ const state = {
   ui: {},
   detail: null,
   photoId: null,
+  lastList: null,
 };
 let routeToken = 0;
 
@@ -323,7 +333,7 @@ async function refresh() {
   state.loaded = true;
 }
 
-const inSection = (sec) => state.watches.filter((w) => w.status === sec.status);
+const inSection = (sec) => state.watches.filter((w) => sec.statuses.includes(w.status));
 
 /* ---------- shell ---------- */
 function renderShell() {
@@ -342,7 +352,7 @@ function renderShell() {
 
 function paintNav() {
   const active = state.route.name === 'detail'
-    ? (sectionForStatus(state.detail?.watch?.status)?.key || null)
+    ? (state.detail ? backTarget(state.detail.watch).key : null)
     : state.route.name;
   for (const a of document.querySelectorAll('.nav-item')) {
     const item = NAV.find((n) => n.key === a.dataset.key);
@@ -355,6 +365,7 @@ function paintNav() {
 /* ---------- section pages ---------- */
 function showSection(key) {
   const sec = SECTIONS[key];
+  state.lastList = key;
   const ui = uiFor(sec);
   const main = $('#main');
   main.style.setProperty('--sec', sec.color);
@@ -421,7 +432,8 @@ function photoEl(w, cls) {
 }
 
 function rowEl(sec, w) {
-  const pill = sec.pill ? h('div', { class: 'm-pill' }, sec.pill(w)) : null;
+  const p = sec.pill ? sec.pill(w) : null;
+  const pill = p ? h('div', { class: sec.pillInRow ? 'row-pill' : 'm-pill' }, p) : null;
   return h('a', { class: 'row', href: '#/watch/' + w.id, style: `--cols:${sec.cols}` },
     photoEl(w, 'thumb'),
     h('div', { class: 'cell c-watch' },
@@ -492,6 +504,7 @@ function tlCard(w, withDate) {
 }
 
 function showTimeline() {
+  state.lastList = 'timeline';
   const main = $('#main');
   main.style.setProperty('--sec', TIMELINE.color);
   const bought = state.watches.filter((w) => w.status !== 'wishlist');
@@ -639,17 +652,22 @@ function renderDetail() {
 
   /* header */
   const sub = [w.reference_number && `Ref. ${w.reference_number}`, w.serial_number && `Serial ${w.serial_number}`].filter(Boolean).join(' · ');
-  const since = w.status === 'owned' && w.purchase_date ? `Since ${fmtMonth(w.purchase_date)}` : null;
+  const since = (w.status === 'owned' || w.status === 'for_sale') && w.purchase_date ? `Since ${fmtMonth(w.purchase_date)}` : null;
+  const statusPills = w.status === 'for_sale'
+    ? [h('span', { class: 'pill status-owned' }, 'Owned'), h('span', { class: 'pill status-for_sale' }, 'For sale')]
+    : [h('span', { class: 'pill status-' + w.status }, STATUS_LABEL[w.status])];
   const head = h('div', {},
     h('div', { class: 'd-brand' }, w.brand),
     h('h1', { class: 'd-model' }, w.model),
     sub ? h('div', { class: 'd-sub' }, sub) : null,
-    h('div', { class: 'd-status' }, h('span', { class: 'pill status-' + w.status }, STATUS_LABEL[w.status]), since));
+    h('div', { class: 'd-status' }, statusPills, since));
 
   const idx = STATUS_ORDER.indexOf(w.status);
+  // A watch that is for sale is still owned, so both steps light up.
+  const lit = (i) => i === idx || (w.status === 'for_sale' && STATUS_ORDER[i] === 'owned');
   const progress = h('div', { class: 'progress', style: `--bar:${sec.bar}` },
-    h('div', { class: 'bars', 'aria-hidden': 'true' }, STATUS_ORDER.map((s, i) => h('i', { class: i === idx ? 'on' : '' }))),
-    h('div', { class: 'labels' }, STATUS_ORDER.map((s, i) => h('span', { class: i === idx ? 'on' : '' }, STATUS_LABEL[s]))));
+    h('div', { class: 'bars', 'aria-hidden': 'true' }, STATUS_ORDER.map((s, i) => h('i', { class: lit(i) ? 'on' : '' }))),
+    h('div', { class: 'labels' }, STATUS_ORDER.map((s, i) => h('span', { class: lit(i) ? 'on' : '' }, STATUS_LABEL[s]))));
 
   /* actions */
   const act = (label, fn, cls = '') => h('button', { class: 'btn ' + cls, type: 'button', onclick: fn }, label);
@@ -709,7 +727,7 @@ function renderDetail() {
   if (w.status !== 'wishlist') boxes.push(serviceBox(w, service));
 
   main.replaceChildren(
-    h('a', { class: 'back', href: '#/' + sec.key }, `‹ ${sec.title}`),
+    h('a', { class: 'back', href: '#/' + backTarget(w).key }, `‹ ${backTarget(w).title}`),
     h('div', { class: 'detail' },
       h('div', { class: 'd-left' }, gallery, notes),
       h('div', { class: 'd-right' }, head, progress, actions, h('div', { class: 'info' }, boxes))));
@@ -798,7 +816,7 @@ async function deleteWatch(w) {
   await guarded(async () => {
     await api('DELETE', '/watches/' + w.id);
     await refresh();
-    location.hash = '#/' + sectionForStatus(w.status).key;
+    location.hash = '#/' + backTarget(w).key;
     toast('Watch deleted');
   });
 }
@@ -877,7 +895,7 @@ function addOffer(w) {
 /* ---------- add / edit watch ---------- */
 const CONDITIONS = [['', 'Not set'], ['New', 'New'], ['Pre-owned', 'Pre-owned']];
 
-function watchGroups() {
+function watchGroups(listable = true) {
   return [
     { fields: [
       { name: 'brand', label: 'Brand', type: 'text', required: true, placeholder: 'Brand name' },
@@ -885,12 +903,15 @@ function watchGroups() {
       { name: 'reference_number', label: 'Reference #', type: 'text', half: true },
       { name: 'serial_number', label: 'Serial # (optional)', type: 'text', half: true },
     ] },
-    { title: 'Purchase details', showFor: ['owned', 'for_sale', 'sold'], fields: [
+    { title: 'Purchase details', showFor: ['owned', 'sold'], fields: [
       { name: 'purchase_date', label: 'Date bought', type: 'date', half: true },
       { name: 'purchase_price_cents', label: 'Price paid', type: 'money', half: true },
       { name: 'purchased_from', label: 'Bought from', type: 'text', placeholder: 'Seller or platform' },
     ] },
-    { title: 'Listing', showFor: ['for_sale'], fields: [
+    { title: 'For sale', showWhen: ({ status }) => status === 'owned' && listable, fields: [
+      { name: 'list_for_sale', label: 'This watch is currently for sale', type: 'checkbox' },
+    ] },
+    { title: 'Listing', showWhen: ({ status, checked }) => status === 'owned' && listable && checked('list_for_sale'), fields: [
       { name: 'asking_price_cents', label: 'Asking price', type: 'money', half: true },
       { name: 'listing_platform', label: 'Platform', type: 'text', half: true },
       { name: 'listed_date', label: 'Listed on', type: 'date', half: true },
@@ -916,7 +937,7 @@ function watchGroups() {
       { name: 'condition', label: 'Condition', type: 'select', options: CONDITIONS },
       { name: 'has_box_papers', label: 'Box and papers included', type: 'checkbox' },
     ] },
-    { title: 'Value', showFor: ['owned', 'for_sale'], fields: [
+    { title: 'Value', showFor: ['owned'], fields: [
       { name: 'est_value_cents', label: 'Estimated market value', type: 'money', half: true },
       { name: 'est_value_updated_on', label: 'Value as of', type: 'date', half: true },
     ] },
@@ -926,12 +947,13 @@ function watchGroups() {
 
 function openAddWatch(status = null) {
   const sec = status ? sectionForStatus(status) : (SECTIONS[state.route.name] || SECTIONS.owned);
-  const initial = sec.status;
+  const forSale = sec.status === 'for_sale';
+  const initial = forSale ? 'owned' : sec.status;   // a watch for sale is an owned watch
   openForm({
     title: 'Add watch', submitLabel: 'Save watch', statusPicker: initial,
     hint: 'You can add photos after saving.',
     groups: watchGroups(),
-    values: { purchase_date: initial === 'owned' ? todayStr() : '', priority: 'medium', listing_status: 'listed', outcome: 'sold' },
+    values: { purchase_date: initial === 'owned' ? todayStr() : '', priority: 'medium', listing_status: 'listed', outcome: 'sold', list_for_sale: forSale },
     onSubmit: async (payload) => {
       const created = await api('POST', '/watches', payload);
       await refresh();
@@ -950,8 +972,9 @@ function withDefaults(w) {
 
 function openEditWatch(w) {
   openForm({
-    title: 'Edit watch', submitLabel: 'Save changes', statusPicker: w.status,
-    groups: watchGroups(), values: withDefaults(w),
+    title: 'Edit watch', submitLabel: 'Save changes', statusPicker: w.status === 'for_sale' ? 'owned' : w.status,
+    groups: watchGroups(w.status === 'owned' || w.status === 'for_sale'),
+    values: { ...withDefaults(w), list_for_sale: w.status === 'for_sale' },
     onSubmit: async (payload) => {
       await updateWatch(w.id, payload, 'Changes saved');
     },
@@ -1029,11 +1052,11 @@ function openForm({ title, groups, values = {}, submitLabel = 'Save', statusPick
   let status = statusPicker;
 
   if (statusPicker) {
-    const radios = STATUS_ORDER.map((s) => {
+    const radios = ['wishlist', 'owned', 'sold'].map((s) => {
       const c = sectionForStatus(s).color;
       return h('label', { style: `--c:${c}` },
         h('input', { type: 'radio', name: 'status', value: s, checked: s === status, onchange: () => { status = s; syncGroups(); } }),
-        h('span', {}, STATUS_LABEL[s]));
+        h('span', {}, s === 'sold' ? 'Past' : STATUS_LABEL[s]));
     });
     body.append(h('fieldset', { class: 'status-pick' }, h('legend', { class: 'sr-only', style: 'position:absolute;left:-9999px' }, 'Status'), radios));
   }
@@ -1045,8 +1068,13 @@ function openForm({ title, groups, values = {}, submitLabel = 'Save', statusPick
     return fs;
   });
   function syncGroups() {
-    for (const fs of sets) fs.hidden = !!(status && fs._group.showFor && !fs._group.showFor.includes(status));
+    const ctx = { status, checked: (name) => !!form.elements[name]?.checked };
+    for (const fs of sets) {
+      const g = fs._group;
+      fs.hidden = !!((status && g.showFor && !g.showFor.includes(status)) || (g.showWhen && !g.showWhen(ctx)));
+    }
   }
+  form.addEventListener('change', syncGroups);
   syncGroups();
   if (hint) body.append(h('p', { class: 'field hint' }, hint));
 
@@ -1065,7 +1093,10 @@ function openForm({ title, groups, values = {}, submitLabel = 'Save', statusPick
         if (fs.hidden) continue;
         for (const f of fs._group.fields) payload[f.name] = readField(form, f);
       }
-      if (statusPicker) payload.status = status;
+      if (statusPicker) {
+        payload.status = status === 'owned' && payload.list_for_sale ? 'for_sale' : status;
+        delete payload.list_for_sale;
+      }
       await onSubmit(payload);
       dlg.close();
     } catch (err) {

@@ -255,6 +255,9 @@ async function updateWatch(request, env, id) {
   const values = clean(WATCH_SPEC, body, true);
   const current = await env.DB.prepare('SELECT * FROM watches WHERE id = ?').bind(id).first();
   if (!current) throw new HttpError(404, 'Watch not found.');
+  if (values.status === 'for_sale' && current.status !== 'for_sale' && current.status !== 'owned') {
+    throw new HttpError(400, 'A watch has to be owned before it can be listed for sale.', { status: 'Move it to Owned first.' });
+  }
   const extra = applyStatusRules(values, current);
   const cols = Object.keys(values);
   if (!cols.length) throw new HttpError(400, 'Nothing to update.');
