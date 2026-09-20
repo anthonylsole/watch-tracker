@@ -38,6 +38,7 @@ const ICONS = {
   sale: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h8.5l9 9a2 2 0 0 1 0 2.8l-5.7 5.7a2 2 0 0 1-2.8 0L3 11.5z" fill="currentColor"/><circle class="ko-fill" cx="7.5" cy="7.5" r="1.6"/></svg>',
   past: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="5" rx="1" fill="currentColor"/><path d="M5 10.5h14V19a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1z" fill="currentColor"/><path class="ko" d="M10 13.5h4" fill="none" stroke-width="2" stroke-linecap="round"/></svg>',
   wish: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17.5l-5.4 2.9 1-6.1L3.2 10l6.1-.9z" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>',
+  timeline: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="5.5" r="2.8" fill="currentColor"/><circle cx="12" cy="12" r="2.8" fill="currentColor"/><circle cx="12" cy="18.5" r="2.8" fill="currentColor"/><path d="M15.8 5.5h5M3.2 12h5M15.8 18.5h5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
   art: '<svg viewBox="0 0 208 500" fill="none" stroke="#FFFFFF" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M61 175.5L73 10H135L147 175.5"/><path d="M61 324.5L73 490H135L147 324.5"/><circle cx="104" cy="250" r="86"/><path d="M104 207V250L131.5 270.6"/></svg>',
 };
 
@@ -291,6 +292,10 @@ const SECTIONS = {
 const SECTION_KEYS = ['owned', 'for-sale', 'past', 'wishlist'];
 const sectionForStatus = (status) => SECTION_KEYS.map((k) => SECTIONS[k]).find((s) => s.status === status);
 
+const TIMELINE = { key: 'timeline', label: 'Timeline', title: 'Timeline', color: '#8452C4', icon: 'timeline' };
+const NAV = [...SECTION_KEYS.map((k) => SECTIONS[k]), TIMELINE];
+const navCount = (item) => (item.key === 'timeline' ? state.watches.filter((w) => w.status !== 'wishlist').length : inSection(item).length);
+
 /* ---------- state ---------- */
 const state = {
   watches: [],
@@ -323,10 +328,9 @@ const inSection = (sec) => state.watches.filter((w) => w.status === sec.status);
 /* ---------- shell ---------- */
 function renderShell() {
   const nav = h('nav', { class: 'nav', 'aria-label': 'Sections' });
-  for (const key of SECTION_KEYS) {
-    const sec = SECTIONS[key];
-    nav.append(h('a', { class: 'nav-item', href: '#/' + key, 'data-key': key, style: `--c:${sec.color}` },
-      icon(sec.icon), h('span', { class: 'label' }, sec.label), h('span', { class: 'count' }, '')));
+  for (const item of NAV) {
+    nav.append(h('a', { class: 'nav-item', href: '#/' + item.key, 'data-key': item.key, style: `--c:${item.color}` },
+      icon(item.icon), h('span', { class: 'label' }, item.label), h('span', { class: 'count' }, '')));
   }
   const side = h('aside', { class: 'side' },
     h('div', { class: 'wordmark' }, 'Watch Tracker'),
@@ -341,10 +345,10 @@ function paintNav() {
     ? (sectionForStatus(state.detail?.watch?.status)?.key || null)
     : state.route.name;
   for (const a of document.querySelectorAll('.nav-item')) {
-    const sec = SECTIONS[a.dataset.key];
+    const item = NAV.find((n) => n.key === a.dataset.key);
     if (a.dataset.key === active) a.setAttribute('aria-current', 'page');
     else a.removeAttribute('aria-current');
-    $('.count', a).textContent = state.loaded ? String(inSection(sec).length) : '';
+    $('.count', a).textContent = state.loaded ? String(navCount(item)) : '';
   }
 }
 
@@ -460,6 +464,115 @@ function paintResults(sec) {
     h('div', { class: 'thead', style: `--cols:${sec.cols}` }, h('span'), h('span', {}, 'Watch'), sec.columns.map(([label]) => h('span', {}, label)), h('span')),
     h('div', { class: 'rows' }, list.map((w) => rowEl(sec, w))),
     h('div', { class: 'tfoot' }, `Showing ${list.length} of ${all.length}`)));
+}
+
+/* ---------- timeline ---------- */
+const DOT = { owned: '#4FBF9A', for_sale: '#E0603A', sold: '#D4A62A' };
+const compactMoney = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', notation: 'compact', maximumFractionDigits: 1 });
+let timelineOrder = 'newest';
+
+function tlCard(w, withDate) {
+  const paid = w.purchase_price_cents !== null ? `Paid ${money(w.purchase_price_cents)}` : 'Price not recorded';
+  const line1 = [paid, w.purchased_from].filter(Boolean).join(' · ');
+  let line2 = null;
+  if (w.status === 'owned' && w.est_value_cents !== null) line2 = `Est. value ${money(w.est_value_cents)}`;
+  if (w.status === 'for_sale') line2 = `Listed at ${money(w.asking_price_cents)}`;
+  if (w.status === 'sold') {
+    line2 = `${OUTCOMES[w.outcome] || 'Sold'} ${fmtMonth(w.sale_date)}`
+      + (w.outcome === 'sold' && w.sale_price_cents !== null ? ` for ${money(w.sale_price_cents)}` : '');
+  }
+  return h('a', { class: 'tl-card', href: '#/watch/' + w.id },
+    photoEl(w, 'thumb'),
+    h('div', { class: 'tl-body' },
+      withDate ? h('div', { class: 'tl-date-m' }, fmtDate(w.purchase_date)) : null,
+      h('div', { class: 'brand' }, w.brand),
+      h('div', { class: 'model' }, w.model),
+      h('div', { class: 'tl-line' }, line1),
+      line2 ? h('div', { class: 'tl-line' }, line2) : null,
+      h('span', { class: 'pill status-' + w.status }, STATUS_LABEL[w.status])));
+}
+
+function showTimeline() {
+  const main = $('#main');
+  main.style.setProperty('--sec', TIMELINE.color);
+  const bought = state.watches.filter((w) => w.status !== 'wishlist');
+  const orderBtn = (key, label) => h('button', {
+    type: 'button', 'aria-pressed': String(timelineOrder === key),
+    onclick: () => { timelineOrder = key; showTimeline(); },
+  }, label);
+  const head = h('header', { class: 'page-head' },
+    h('h1', {}, TIMELINE.title),
+    h('button', { class: 'btn primary add-head', type: 'button', onclick: () => openAddWatch() }, '+ Add watch'),
+    h('div', { class: 'seg', role: 'group', 'aria-label': 'Order' }, orderBtn('newest', 'Newest first'), orderBtn('oldest', 'Oldest first')));
+
+  if (!bought.length) {
+    main.replaceChildren(head, h('div', { class: 'results' }, h('div', { class: 'empty' },
+      h('h2', {}, 'Your timeline starts with your first watch'),
+      h('p', {}, 'Add a watch with a purchase date and it will appear here.'),
+      h('button', { class: 'btn primary', type: 'button', onclick: () => openAddWatch('owned') }, '+ Add watch'))));
+    return;
+  }
+
+  const byDate = (a, b) => (a.purchase_date < b.purchase_date ? -1 : a.purchase_date > b.purchase_date ? 1 : a.id - b.id);
+  const asc = bought.filter((w) => w.purchase_date).sort(byDate);
+  const undated = bought.filter((w) => !w.purchase_date);
+  const dated = timelineOrder === 'newest' ? [...asc].reverse() : asc;
+
+  const years = new Map();
+  for (const w of asc) {
+    const y = w.purchase_date.slice(0, 4);
+    if (!years.has(y)) years.set(y, []);
+    years.get(y).push(w);
+  }
+  const yearInfo = [...years].map(([year, ws]) => ({ year, count: ws.length, spent: total(ws, (w) => w.purchase_price_cents) }));
+  const maxSpent = Math.max(1, ...yearInfo.map((y) => y.spent || 0));
+
+  const stats = [
+    ['Watches bought', String(bought.length)],
+    ['Total spent', money(total(bought, (w) => w.purchase_price_cents))],
+    ['First purchase', asc.length ? fmtMonth(asc[0].purchase_date) : '—'],
+    ['Latest purchase', asc.length ? fmtMonth(asc[asc.length - 1].purchase_date) : '—'],
+  ];
+
+  const strip = yearInfo.length ? h('section', { class: 'years', 'aria-label': 'Spending by year' },
+    h('h2', {}, 'Spending by year'),
+    h('div', { class: 'cols' }, yearInfo.map((y) => h('div', { class: 'col' },
+      h('b', {}, y.spent === null ? '—' : compactMoney.format(y.spent / 100)),
+      h('div', { class: 'bar', style: `height:${Math.max(4, Math.round(((y.spent || 0) / maxSpent) * 90))}px` }),
+      h('span', {}, y.year),
+      h('span', {}, `${y.count} ${y.count === 1 ? 'watch' : 'watches'}`))))) : null;
+
+  const list = h('ol', { class: 'tl', 'aria-label': 'Purchases by date' });
+  let lastYear = null;
+  let n = 0;
+  for (const w of dated) {
+    const y = w.purchase_date.slice(0, 4);
+    if (y !== lastYear) {
+      const info = yearInfo.find((i) => i.year === y);
+      list.append(h('li', { class: 'tl-year' },
+        h('span', { class: 'yr' }, y),
+        h('span', { class: 'sum' }, `${info.count} ${info.count === 1 ? 'watch' : 'watches'}${info.spent === null ? '' : ' · ' + money(info.spent)}`)));
+      lastYear = y;
+    }
+    const d = parseDay(w.purchase_date);
+    list.append(h('li', { class: 'tl-item ' + (n++ % 2 === 0 ? 'left' : 'right'), style: `--dot:${DOT[w.status]}` },
+      h('div', { class: 'tl-cardcell' }, tlCard(w, true)),
+      h('div', { class: 'tl-mid', 'aria-hidden': 'true' }, h('span', { class: 'tl-dot' })),
+      h('div', { class: 'tl-date', 'aria-hidden': 'true' },
+        h('span', { class: 'd' }, String(d.getDate())),
+        h('span', { class: 'm' }, d.toLocaleDateString('en-US', { month: 'long' })))));
+  }
+
+  const legend = h('ul', { class: 'tl-legend', 'aria-label': 'Legend' },
+    [['owned', 'Owned'], ['for_sale', 'For sale'], ['sold', 'Past']].map(([k, label]) =>
+      h('li', {}, h('span', { class: 'sw', style: `background:${DOT[k]}` }), label)));
+
+  main.replaceChildren(...[head,
+    h('section', { class: 'stats', 'aria-label': 'Summary' }, stats.map(([k, v]) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k), h('div', { class: 'v' }, v)))),
+    strip, legend, list,
+    undated.length ? h('section', { class: 'undated' },
+      h('h2', {}, 'No purchase date'),
+      h('div', { class: 'undated-grid' }, undated.map((w) => tlCard(w, false)))) : null].filter(Boolean));
 }
 
 /* ---------- detail page ---------- */
@@ -982,6 +1095,7 @@ function parseRoute() {
   const hash = location.hash.replace(/^#\/?/, '');
   const m = hash.match(/^watch\/(\d+)$/);
   if (m) return { name: 'detail', id: Number(m[1]) };
+  if (hash === 'timeline') return { name: 'timeline' };
   if (SECTIONS[hash]) return { name: hash };
   return { name: 'owned' };
 }
@@ -1012,6 +1126,7 @@ async function route() {
   }
   state.detail = null;
   paintNav();
+  if (r.name === 'timeline') { showTimeline(); window.scrollTo(0, 0); return; }
   showSection(r.name);
   window.scrollTo(0, 0);
 }
