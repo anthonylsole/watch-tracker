@@ -141,15 +141,17 @@ select.chip option { color: #000; background: #fff; }
 .pill.status-wishlist { background: #C3D3F2; color: #2F4E96; }
 
 /* ---------- cards (grid layout) ---------- */
-.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 16px; }
-.card { display: flex; flex-direction: column; gap: 10px; padding: 12px; background: var(--row); border: 1px solid var(--row-line); border-radius: 12px; color: var(--ink); text-decoration: none; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; }
+.card { display: flex; flex-direction: column; gap: 12px; padding: 16px; background: var(--row); border: 1px solid var(--row-line); border-radius: 12px; color: var(--ink); text-decoration: none; }
 .card:hover { background: var(--row-hover); }
-.card .ph { height: 130px; border-radius: 8px; font-size: 12px; }
+.card .brand { font-size: 13px; }
+.card .ph { height: auto; aspect-ratio: 4 / 3; border-radius: 10px; font-size: 15px; }
 .card-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.card .model { font-size: 16px; font-weight: 700; }
-.card-vals { display: flex; justify-content: space-between; font-size: 13px; gap: 8px; }
+.card-top .pill { padding: 3px 12px; font-size: 14px; }
+.card .model { font-size: 22px; font-weight: 700; line-height: 1.2; }
+.card-vals { display: flex; justify-content: space-between; font-size: 16px; gap: 8px; }
 .card-vals span:first-child { font-weight: 700; }
-.card-sub { font-size: 12px; color: var(--ink-2); min-height: 1em; overflow-wrap: anywhere; }
+.card-sub { font-size: 14px; color: var(--ink-2); min-height: 1em; overflow-wrap: anywhere; }
 
 .empty { padding: 48px 24px; text-align: center; background: var(--panel); border: 1px dashed var(--control); border-radius: 12px; }
 .empty h2 { font-family: var(--serif); font-weight: 600; font-size: 22px; }
