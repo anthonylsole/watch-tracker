@@ -102,10 +102,52 @@ CREATE TABLE IF NOT EXISTS offers (
   offered_on    TEXT,
   status        TEXT NOT NULL DEFAULT 'open'
                   CHECK (status IN ('open', 'accepted', 'declined', 'expired')),
+  source        TEXT NOT NULL DEFAULT 'manual',   -- 'manual' or 'ebay'
+  external_id   TEXT,                             -- eBay Best Offer ID for synced offers
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS ebay_connection (
+  id                        INTEGER PRIMARY KEY CHECK (id = 1),   -- one connected eBay account
+  environment               TEXT NOT NULL,
+  refresh_token_enc         TEXT NOT NULL,                        -- encrypted, never stored in plain text
+  refresh_token_expires_at  TEXT,
+  scopes                    TEXT,
+  connected_at              TEXT NOT NULL DEFAULT (datetime('now')),
+  last_sync_at              TEXT,
+  last_traffic_sync_at      TEXT,
+  last_sync_ok              INTEGER,
+  last_sync_message         TEXT
+);
+
+CREATE TABLE IF NOT EXISTS ebay_listings (
+  id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  item_id              TEXT NOT NULL UNIQUE,
+  watch_id             INTEGER REFERENCES watches (id) ON DELETE SET NULL,
+  title                TEXT NOT NULL,
+  listing_url          TEXT,
+  listing_type         TEXT,
+  price_cents          INTEGER,
+  currency             TEXT,
+  quantity             INTEGER,
+  quantity_sold        INTEGER,
+  watch_count          INTEGER,
+  best_offer_enabled   INTEGER NOT NULL DEFAULT 0,
+  best_offer_count     INTEGER,
+  start_time           TEXT,
+  end_time             TEXT,
+  views_7d             INTEGER,
+  views_30d            INTEGER,
+  impressions_30d      INTEGER,
+  status               TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'ended')),
+  last_seen_at         TEXT,
+  synced_at            TEXT,
+  created_at           TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_watches_status          ON watches (status);
 CREATE INDEX IF NOT EXISTS idx_watch_photos_watch_id   ON watch_photos (watch_id);
 CREATE INDEX IF NOT EXISTS idx_service_records_watch_id ON service_records (watch_id);
 CREATE INDEX IF NOT EXISTS idx_offers_watch_id         ON offers (watch_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_offers_source_external_id ON offers (source, external_id);
+CREATE INDEX IF NOT EXISTS idx_ebay_listings_watch_id  ON ebay_listings (watch_id);

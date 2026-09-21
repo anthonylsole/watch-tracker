@@ -5,6 +5,8 @@
 //
 // Amounts are whole cents (USD) and dates are YYYY-MM-DD strings.
 
+import { EbayError, status as ebayStatus, beginConnect, finishConnect, disconnect as ebayDisconnect, syncEbay, syncOffersForListing } from './ebay.js';
+
 const STATUSES = ['wishlist', 'owned', 'for_sale', 'sold'];
 
 // Columns the client may set on a watch. Anything not listed here is ignored,
@@ -199,7 +201,7 @@ function applyStatusRules(values, current) {
   if (changed && prev === 'sold') {
     for (const c of SALE_COLUMNS) if (!(c in values)) values[c] = null;
   }
-  if (changed && prev === 'for_sale') extra.push('expire-offers');
+  if (changed && prev === 'for_sale') extra.push('expire-offers', 'unlink-ebay');
   return extra;
 }
 
@@ -214,8 +216,13 @@ const LIST_SQL = `
     (SELECT COUNT(*) FROM offers o WHERE o.watch_id = w.id AND o.status = 'open') AS open_offers,
     (SELECT MAX(o.amount_cents) FROM offers o WHERE o.watch_id = w.id AND o.status = 'open') AS best_offer_cents,
     (SELECT MAX(s.serviced_on) FROM service_records s WHERE s.watch_id = w.id) AS last_serviced_on,
-    (SELECT s.next_due_on FROM service_records s WHERE s.watch_id = w.id ORDER BY s.serviced_on DESC, s.id DESC LIMIT 1) AS next_service_due_on
+    (SELECT s.next_due_on FROM service_records s WHERE s.watch_id = w.id ORDER BY s.serviced_on DESC, s.id DESC LIMIT 1) AS next_service_due_on,
+    el.item_id AS ebay_item_id, el.status AS ebay_status, el.listing_url AS ebay_url, el.price_cents AS ebay_price_cents,
+    el.watch_count AS ebay_watchers, el.views_7d AS ebay_views_7d, el.views_30d AS ebay_views_30d,
+    el.end_time AS ebay_end_time, el.synced_at AS ebay_synced_at
   FROM watches w
+  LEFT JOIN ebay_listings el ON el.id = (
+    SELECT x.id FROM ebay_listings x WHERE x.watch_id = w.id ORDER BY (x.status = 'active') DESC, x.id DESC LIMIT 1)
   ORDER BY w.updated_at DESC, w.id DESC`;
 
 async function listWatches(env) {
@@ -226,12 +233,13 @@ async function listWatches(env) {
 async function loadWatch(env, id) {
   const watch = await env.DB.prepare('SELECT * FROM watches WHERE id = ?').bind(id).first();
   if (!watch) throw new HttpError(404, 'Watch not found.');
-  const [photos, service, offers] = await env.DB.batch([
+  const [photos, service, offers, ebay] = await env.DB.batch([
     env.DB.prepare('SELECT id, content_type, byte_size, sort_order FROM watch_photos WHERE watch_id = ? ORDER BY sort_order, id').bind(id),
     env.DB.prepare('SELECT * FROM service_records WHERE watch_id = ? ORDER BY serviced_on DESC, id DESC').bind(id),
     env.DB.prepare('SELECT * FROM offers WHERE watch_id = ? ORDER BY created_at DESC, id DESC').bind(id),
+    env.DB.prepare("SELECT * FROM ebay_listings WHERE watch_id = ? ORDER BY (status = 'active') DESC, id DESC LIMIT 1").bind(id),
   ]);
-  return { watch, photos: photos.results, service_records: service.results, offers: offers.results };
+  return { watch, photos: photos.results, service_records: service.results, offers: offers.results, ebay: ebay.results[0] || null };
 }
 
 async function getWatch(env, id) {
@@ -269,6 +277,9 @@ async function updateWatch(request, env, id) {
   if (extra.includes('expire-offers')) {
     stmts.push(env.DB.prepare("UPDATE offers SET status = 'expired' WHERE watch_id = ? AND status = 'open'").bind(id));
   }
+  if (extra.includes('unlink-ebay')) {
+    stmts.push(env.DB.prepare('UPDATE ebay_listings SET watch_id = NULL WHERE watch_id = ?').bind(id));
+  }
   await env.DB.batch(stmts);
   return getWatch(env, id);
 }
@@ -277,6 +288,7 @@ async function deleteWatch(env, id) {
   const { results } = await env.DB.prepare('SELECT r2_key FROM watch_photos WHERE watch_id = ?').bind(id).all();
   await watchExists(env, id);
   await env.DB.batch([
+    env.DB.prepare('UPDATE ebay_listings SET watch_id = NULL WHERE watch_id = ?').bind(id),
     env.DB.prepare('DELETE FROM offers WHERE watch_id = ?').bind(id),
     env.DB.prepare('DELETE FROM service_records WHERE watch_id = ?').bind(id),
     env.DB.prepare('DELETE FROM watch_photos WHERE watch_id = ?').bind(id),
@@ -391,6 +403,7 @@ async function updateOffer(request, env, id) {
   const v = clean(OFFER_UPDATE_SPEC, await readJson(request), false);
   const offer = await env.DB.prepare('SELECT * FROM offers WHERE id = ?').bind(id).first();
   if (!offer) throw new HttpError(404, 'Offer not found.');
+  if (offer.source === 'ebay') throw new HttpError(400, 'This offer came from eBay. Respond to it on eBay and it will update here.');
   await env.DB.prepare('UPDATE offers SET status = ? WHERE id = ?').bind(v.status, id).run();
   if (v.status === 'accepted') {
     await env.DB.prepare(
@@ -401,9 +414,48 @@ async function updateOffer(request, env, id) {
 }
 
 async function deleteOffer(env, id) {
+  const existing = await env.DB.prepare('SELECT source FROM offers WHERE id = ?').bind(id).first();
+  if (existing?.source === 'ebay') throw new HttpError(400, 'This offer came from eBay, so it cannot be deleted here.');
   const res = await env.DB.prepare('DELETE FROM offers WHERE id = ?').bind(id).run();
   if (!res.meta.changes) throw new HttpError(404, 'Offer not found.');
   return json({ ok: true });
+}
+
+async function linkEbay(request, env, watchId) {
+  const body = await readJson(request);
+  const itemId = String(body.item_id ?? '').trim();
+  if (!/^\d{6,20}$/.test(itemId)) throw new HttpError(400, 'Choose one of your eBay listings.', { item_id: 'Required' });
+  const watch = await env.DB.prepare('SELECT id, status FROM watches WHERE id = ?').bind(watchId).first();
+  if (!watch) throw new HttpError(404, 'Watch not found.');
+  if (watch.status !== 'for_sale') throw new HttpError(400, 'Only a watch that is for sale can be linked to an eBay listing.');
+  const listing = await env.DB.prepare('SELECT * FROM ebay_listings WHERE item_id = ?').bind(itemId).first();
+  if (!listing) throw new HttpError(404, 'That listing was not found. Sync with eBay first, then try again.');
+  if (listing.status !== 'active') throw new HttpError(400, 'That listing has ended on eBay.');
+  if (listing.watch_id && listing.watch_id !== watchId) throw new HttpError(409, 'That listing is already linked to another watch.');
+  await env.DB.batch([
+    env.DB.prepare('UPDATE ebay_listings SET watch_id = NULL WHERE watch_id = ? AND item_id != ?').bind(watchId, itemId),
+    env.DB.prepare('UPDATE ebay_listings SET watch_id = ? WHERE item_id = ?').bind(watchId, itemId),
+    env.DB.prepare(
+      `UPDATE watches SET listing_platform = 'eBay', asking_price_cents = COALESCE(?, asking_price_cents),
+         listed_date = COALESCE(?, listed_date), updated_at = datetime('now') WHERE id = ?`
+    ).bind(listing.price_cents, listing.start_time ? listing.start_time.slice(0, 10) : null, watchId),
+  ]);
+  await syncOffersForListing(env, itemId);
+  return json(await loadWatch(env, watchId));
+}
+
+async function unlinkEbay(env, watchId) {
+  await watchExists(env, watchId);
+  await env.DB.prepare('UPDATE ebay_listings SET watch_id = NULL WHERE watch_id = ?').bind(watchId).run();
+  return json(await loadWatch(env, watchId));
+}
+
+async function listEbayListings(env) {
+  const { results } = await env.DB.prepare(
+    `SELECT item_id, title, listing_url, price_cents, watch_count, views_30d, best_offer_count, end_time, watch_id
+     FROM ebay_listings WHERE status = 'active' ORDER BY created_at DESC, id DESC`
+  ).all();
+  return json({ listings: results });
 }
 
 async function handleApi(request, env, url) {
@@ -412,6 +464,13 @@ async function handleApi(request, env, url) {
   let m;
 
   if (path === '/api/health') return json({ ok: true });
+
+  if (path === '/api/ebay/status' && method === 'GET') return json(await ebayStatus(env));
+  if (path === '/api/ebay/connect' && method === 'GET') return beginConnect(env);
+  if (path === '/api/ebay/callback' && method === 'GET') return finishConnect(env, request);
+  if (path === '/api/ebay/sync' && method === 'POST') return json(await syncEbay(env, { force: true }));
+  if (path === '/api/ebay/disconnect' && method === 'POST') { await ebayDisconnect(env); return json({ ok: true }); }
+  if (path === '/api/ebay/listings' && method === 'GET') return listEbayListings(env);
 
   if (path === '/api/watches') {
     if (method === 'GET') return listWatches(env);
@@ -426,6 +485,10 @@ async function handleApi(request, env, url) {
   if ((m = path.match(/^\/api\/watches\/(\d+)\/photos$/)) && method === 'POST') return uploadPhotos(request, env, Number(m[1]));
   if ((m = path.match(/^\/api\/watches\/(\d+)\/service$/)) && method === 'POST') return addServiceRecord(request, env, Number(m[1]));
   if ((m = path.match(/^\/api\/watches\/(\d+)\/offers$/)) && method === 'POST') return addOffer(request, env, Number(m[1]));
+  if ((m = path.match(/^\/api\/watches\/(\d+)\/ebay$/))) {
+    if (method === 'POST') return linkEbay(request, env, Number(m[1]));
+    if (method === 'DELETE') return unlinkEbay(env, Number(m[1]));
+  }
 
   if ((m = path.match(/^\/api\/photos\/(\d+)$/))) {
     if (method === 'GET') return servePhoto(env, Number(m[1]));
@@ -449,8 +512,14 @@ export default {
       return await handleApi(request, env, url);
     } catch (err) {
       if (err instanceof HttpError) return json({ error: err.message, fields: err.fields }, err.status);
+      if (err instanceof EbayError) return json({ error: err.message }, 502);
       console.error(err);
       return json({ error: 'Something went wrong on the server.' }, 500);
     }
+  },
+
+  // Hourly by default (see [triggers] in wrangler.toml). Does nothing until eBay is connected.
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(syncEbay(env, { quiet: true }).catch((err) => console.error('eBay sync failed:', err.message)));
   },
 };

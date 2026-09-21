@@ -36,6 +36,19 @@ Keep the R2 bucket private. Do not turn on a public bucket URL. The Worker reads
 
 Every later push to the repo redeploys the app. If you change the database or bucket, edit `wrangler.toml`. Bindings in `wrangler.toml` replace any set by hand in the dashboard.
 
+## eBay (optional): views and offers on the For sale page
+
+Read-only. The app can pull your active eBay listings, their views and your Best Offers, and show them next to your own numbers. It never changes anything on eBay and never stores buyer names.
+
+1. **Database:** if your database already exists, run `migrations/2026-09-ebay.sql` once in the D1 console. (A new database gets this from `schema.sql`.)
+2. **eBay developer account:** sign in at developer.ebay.com with your seller account and create a **Production** keyset. eBay asks about *Marketplace Account Deletion* before it turns the keyset on. This app stores no buyer data, so request the exemption.
+3. **Redirect URL (RuName):** in your eBay developer account, create a sign-in redirect URL for the keyset. Set its accepted URL to `https://YOUR-WORKER-ADDRESS/api/ebay/callback`, and use your app's address for the declined and privacy URLs. Copy the RuName eBay gives you into `EBAY_RU_NAME` in `wrangler.toml`.
+4. **Secrets:** on the Worker in Cloudflare, add three Secrets: `EBAY_CLIENT_ID` (App ID), `EBAY_CLIENT_SECRET` (Cert ID) and `EBAY_TOKEN_KEY` (any long random string, 32 or more characters, which encrypts the saved eBay sign-in). Keep the key somewhere safe; if you lose it, just reconnect.
+5. **Deploy**, open **For sale**, and choose **Connect eBay**. Approve access on eBay. The first sync runs by itself and then repeats every hour.
+6. On a for-sale watch, choose **Link eBay listing**. Its views, watchers and offers then show on the watch and on the For sale page.
+
+The permissions requested are read-only: the basic eBay scope, `sell.inventory.readonly` and `sell.analytics.readonly`. If a sync reports a permissions problem, the message on the For sale page is eBay's own wording.
+
 ## Protect it
 
 The Worker has no login of its own, and the `workers.dev` address is public. Put Cloudflare Access in front of the Worker so only your email can open it.
@@ -54,5 +67,7 @@ npx wrangler dev
 wrangler.toml     Worker, D1 and R2 configuration (edit the database_id)
 schema.sql        Tables and indexes
 src/worker.js     JSON API (D1 and R2)
+src/ebay.js       eBay connection and sync
+migrations/       One-off SQL for existing databases
 public/           The web app (index.html, styles.css, app.js)
 ```

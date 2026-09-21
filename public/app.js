@@ -116,8 +116,45 @@ const gainOwned = (w) => (w.est_value_cents !== null && w.purchase_price_cents !
 const gainSold = (w) => (w.outcome === 'sold' && w.sale_price_cents !== null && w.purchase_price_cents !== null ? w.sale_price_cents - w.purchase_price_cents : null);
 const daysListed = (w) => (w.listed_date ? Math.max(0, daysBetween(w.listed_date, todayStr())) : null);
 const heldMonths = (w) => (w.purchase_date && w.sale_date ? monthsBetween(w.purchase_date, w.sale_date) : null);
+// "Held 2 yr 3 mo": how long a watch has been owned (until today, or until it was sold).
+function heldLabel(w) {
+  if (!w.purchase_date || w.status === 'wishlist') return null;
+  const end = w.status === 'sold' ? w.sale_date : todayStr();
+  if (!end) return null;
+  const days = daysBetween(w.purchase_date, end);
+  if (days < 0) return null;
+  const a = parseDay(w.purchase_date);
+  const b = parseDay(end);
+  let months = (b.getFullYear() - a.getFullYear()) * 12 + (b.getMonth() - a.getMonth());
+  if (b.getDate() < a.getDate()) months -= 1;
+  if (months < 1) return days === 0 ? 'Held less than a day' : `Held ${days} ${days === 1 ? 'day' : 'days'}`;
+  const yrs = Math.floor(months / 12);
+  const mos = months % 12;
+  return 'Held ' + [yrs ? `${yrs} yr` : null, mos ? `${mos} mo` : null].filter(Boolean).join(' ');
+}
 const isServiceDue = (w) => !!w.next_service_due_on && daysBetween(todayStr(), w.next_service_due_on) <= 60;
 const host = (u) => { try { return new URL(u).hostname.replace(/^www\./, ''); } catch { return null; } };
+
+// eBay numbers for a watch that is linked to a listing (see the For sale page).
+const linkedToEbay = (w) => !!w.ebay_item_id;
+function viewsCell(w) {
+  if (!linkedToEbay(w)) return '—';
+  if (w.ebay_status === 'ended') return 'Ended on eBay';
+  if (w.ebay_views_30d === null || w.ebay_views_30d === undefined) return '—';
+  return h('span', {}, String(w.ebay_views_30d), w.ebay_views_7d !== null && w.ebay_views_7d !== undefined ? h('small', { class: 'sub' }, `${w.ebay_views_7d} in 7 days`) : null);
+}
+function offerCell(w) {
+  if (!w.open_offers) return w.best_offer_cents ? money(w.best_offer_cents) : '—';
+  return h('span', {}, money(w.best_offer_cents), h('small', { class: 'sub' }, `${w.open_offers} open`));
+}
+function ebayLine(w) {
+  if (!linkedToEbay(w)) return null;
+  if (w.ebay_status === 'ended') return 'Listing ended on eBay';
+  const parts = [];
+  if (w.ebay_views_30d !== null && w.ebay_views_30d !== undefined) parts.push(`${w.ebay_views_30d} views (30d)`);
+  parts.push(`${w.open_offers || 0} ${w.open_offers === 1 ? 'offer' : 'offers'}`);
+  return parts.join(' · ');
+}
 
 const LISTING = {
   listed: ['Listed', 'listed'],
@@ -153,10 +190,10 @@ const SECTIONS = {
     },
     chips: [['all', 'All', () => true], ['sale', 'For sale', (w) => w.status === 'for_sale'], ['box', 'Box + papers', (w) => w.has_box_papers === 1], ['service', 'Service due', isServiceDue]],
     sorts: [
+      ['bought', 'Date bought', by((w) => w.purchase_date, -1)],
       ['recent', 'Recently updated', (a, b) => a._i - b._i],
       ['brand', 'Brand A–Z', by((w) => (w.brand + ' ' + w.model).toLowerCase())],
       ['value', 'Est. value', by((w) => w.est_value_cents, -1)],
-      ['bought', 'Date bought', by((w) => w.purchase_date, -1)],
     ],
     cols: '48px minmax(0,2.2fr) repeat(5,minmax(0,1fr)) minmax(0,1.2fr) minmax(0,1fr) 24px',
     columns: [
@@ -179,11 +216,14 @@ const SECTIONS = {
     empty: ['Nothing listed right now', 'Open a watch you own and choose List for sale. It stays in Owned while it is listed.'],
     stats(ws) {
       const days = ws.map(daysListed).filter((d) => d !== null);
+      const tracked = ws.filter((w) => w.ebay_item_id && w.ebay_status === 'active' && w.ebay_views_30d !== null);
       return [
         ['Watches listed', String(ws.length)],
         ['Total asking', money(total(ws, (w) => w.asking_price_cents))],
         ['Open offers', String(ws.reduce((n, w) => n + (w.open_offers || 0), 0))],
-        ['Avg. days listed', days.length ? String(Math.round(days.reduce((a, b) => a + b, 0) / days.length)) : '—'],
+        tracked.length
+          ? ['Views, last 30 days', String(tracked.reduce((n, w) => n + w.ebay_views_30d, 0))]
+          : ['Avg. days listed', days.length ? String(Math.round(days.reduce((a, b) => a + b, 0) / days.length)) : '—'],
       ];
     },
     chips: [
@@ -193,24 +233,26 @@ const SECTIONS = {
       ['pending', 'Pending', (w) => w.listing_status === 'sale_pending'],
     ],
     sorts: [
+      ['bought', 'Date bought', by((w) => w.purchase_date, -1)],
       ['recent', 'Recently updated', (a, b) => a._i - b._i],
       ['days', 'Days listed', by(daysListed, -1)],
       ['asking', 'Asking price', by((w) => w.asking_price_cents, -1)],
       ['brand', 'Brand A–Z', by((w) => (w.brand + ' ' + w.model).toLowerCase())],
     ],
-    cols: '48px minmax(0,2.2fr) minmax(0,1.4fr) minmax(0,1.2fr) repeat(4,minmax(0,1fr)) 24px',
+    cols: '48px minmax(0,2.2fr) minmax(0,1.4fr) minmax(0,1.2fr) repeat(5,minmax(0,1fr)) 24px',
     columns: [
       ['Status', listingPill],
       ['Platform', (w) => w.listing_platform || '—'],
       ['Days listed', (w) => (daysListed(w) === null ? '—' : String(daysListed(w)))],
+      ['Views (30d)', viewsCell],
       ['Asking', (w) => money(w.asking_price_cents)],
       ['Paid', (w) => money(w.purchase_price_cents)],
-      ['Best offer', (w) => money(w.best_offer_cents)],
+      ['Best offer', offerCell],
     ],
     pill: listingPill,
-    mobileMeta: (w) => `Asking ${money(w.asking_price_cents)} · ${w.listing_platform || 'No platform yet'}`,
+    mobileMeta: (w) => [`Asking ${money(w.asking_price_cents)}`, w.listing_platform || 'No platform yet', ebayLine(w)].filter(Boolean).join(' · '),
     cardVals: (w) => [`Asking ${money(w.asking_price_cents)}`, `Paid ${money(w.purchase_price_cents)}`],
-    cardSub: (w) => `${w.listing_platform || 'No platform yet'} · ${daysListed(w) === null ? '—' : daysListed(w)} days listed`,
+    cardSub: (w) => ebayLine(w) || `${w.listing_platform || 'No platform yet'} · ${daysListed(w) === null ? '—' : daysListed(w)} days listed`,
   },
   past: {
     key: 'past', status: 'sold', statuses: ['sold'], label: 'Past', title: 'Past Watches', color: '#9A7000', bar: '#D4A62A', icon: 'past', layout: 'table',
@@ -233,6 +275,7 @@ const SECTIONS = {
       ['other', 'Other', (w) => w.outcome === 'gifted' || w.outcome === 'other'],
     ],
     sorts: [
+      ['bought', 'Date bought', by((w) => w.purchase_date, -1)],
       ['sold', 'Date sold', by((w) => w.sale_date, -1)],
       ['recent', 'Recently updated', (a, b) => a._i - b._i],
       ['gain', 'Gain / loss', by(gainSold, -1)],
@@ -271,6 +314,7 @@ const SECTIONS = {
       ['low', 'Low', (w) => w.priority === 'low'],
     ],
     sorts: [
+      ['added', 'Date added', by((w) => w.created_at, -1)],
       ['priority', 'Priority', by((w) => ({ high: 0, medium: 1, low: 2 })[w.priority] ?? 1)],
       ['recent', 'Recently updated', (a, b) => a._i - b._i],
       ['target', 'Target price', by((w) => w.target_price_cents, -1)],
@@ -314,6 +358,7 @@ const state = {
   detail: null,
   photoId: null,
   lastList: null,
+  ebay: null,
 };
 let routeToken = 0;
 
@@ -324,6 +369,20 @@ function uiFor(sec) {
     state.ui[sec.key] = { q: '', chip: 'all', sort: sec.sorts[0][0], layout };
   }
   return state.ui[sec.key];
+}
+
+async function loadEbayStatus() {
+  try { state.ebay = await api('GET', '/ebay/status'); } catch { state.ebay = null; }
+}
+
+// "5 min ago" from a D1 timestamp (UTC, 'YYYY-MM-DD HH:MM:SS').
+function timeAgo(stamp) {
+  if (!stamp) return 'never';
+  const secs = Math.max(0, Math.round((Date.now() - Date.parse(stamp.replace(' ', 'T') + 'Z')) / 1000));
+  if (secs < 60) return 'just now';
+  if (secs < 3600) return `${Math.round(secs / 60)} min ago`;
+  if (secs < 86400) return `${Math.round(secs / 3600)} hr ago`;
+  return `${Math.round(secs / 86400)} days ago`;
 }
 
 async function refresh() {
@@ -385,19 +444,41 @@ function showSection(key) {
   const sortSel = h('select', { class: 'chip', 'aria-label': 'Sort watches', onchange: (e) => { ui.sort = e.target.value; paintResults(sec); } },
     sec.sorts.map(([k, label]) => h('option', { value: k, selected: ui.sort === k }, 'Sort: ' + label)));
 
-  main.replaceChildren(
+  main.replaceChildren(...[
     h('header', { class: 'page-head' },
       h('h1', {}, sec.title),
       h('button', { class: 'btn primary add-head', type: 'button', onclick: () => openAddWatch(sec.status) }, '+ Add watch'),
       search,
       h('div', { class: 'seg', role: 'group', 'aria-label': 'View' }, layoutBtn('table', 'Table'), layoutBtn('grid', 'Grid')),
       sortSel),
+    sec.key === 'for-sale' ? ebayBar() : null,
     h('section', { class: 'stats', id: 'stats', 'aria-label': 'Summary' }),
     h('div', { class: 'chips', id: 'chips', role: 'group', 'aria-label': 'Filter' }),
-    h('section', { class: 'results', id: 'results', 'aria-live': 'polite' }));
+    h('section', { class: 'results', id: 'results', 'aria-live': 'polite' })].filter(Boolean));
   paintStats(sec);
   paintChips(sec);
   paintResults(sec);
+}
+
+function ebayBar() {
+  const e = state.ebay;
+  if (!e) return null;
+  if (!e.configured) {
+    return h('div', { class: 'ebay-bar' }, h('span', {}, 'eBay is not set up yet. Add your eBay keys to see views and offers for your listings here (see the README).'));
+  }
+  if (!e.connected) {
+    return h('div', { class: 'ebay-bar' },
+      h('span', {}, 'Connect your eBay account to see views and offers for your listings here. The connection is read-only.'),
+      h('a', { class: 'btn small primary', href: '/api/ebay/connect' }, 'Connect eBay'));
+  }
+  const bad = e.last_sync_ok === 0;
+  return h('div', { class: 'ebay-bar' },
+    h('div', { class: 'ebay-text' },
+      h('span', {}, `eBay connected · synced ${timeAgo(e.last_sync_at)}`),
+      e.last_sync_message ? h('span', { class: bad ? 'ebay-msg bad' : 'ebay-msg' }, e.last_sync_message) : null),
+    h('div', { class: 'ebay-actions' },
+      h('button', { class: 'btn small primary', type: 'button', onclick: (ev) => syncEbayNow(ev.currentTarget) }, 'Sync now'),
+      h('button', { class: 'btn small', type: 'button', onclick: disconnectEbay }, 'Disconnect')));
 }
 
 function paintStats(sec) {
@@ -438,7 +519,8 @@ function rowEl(sec, w) {
     photoEl(w, 'thumb'),
     h('div', { class: 'cell c-watch' },
       h('div', { class: 'brand' }, w.brand), h('div', { class: 'model' }, w.model), pill,
-      h('div', { class: 'm-meta' }, sec.mobileMeta(w))),
+      h('div', { class: 'm-meta' }, sec.mobileMeta(w)),
+      heldLabel(w) ? h('div', { class: 'm-held' }, heldLabel(w)) : null),
     sec.columns.map(([, render]) => h('div', { class: 'cell' }, render(w))),
     h('span', { class: 'chev', 'aria-hidden': 'true' }, '›'));
 }
@@ -450,6 +532,7 @@ function cardEl(sec, w) {
     h('div', { class: 'card-top' }, h('span', { class: 'brand' }, w.brand), sec.pill ? sec.pill(w) : null),
     h('div', { class: 'model' }, w.model),
     h('div', { class: 'card-vals' }, h('span', {}, a), h('span', {}, b)),
+    heldLabel(w) ? h('div', { class: 'card-held' }, heldLabel(w)) : null,
     h('div', { class: 'card-sub' }, sec.cardSub(w)));
 }
 
@@ -500,6 +583,7 @@ function tlCard(w, withDate) {
       h('div', { class: 'model' }, w.model),
       h('div', { class: 'tl-line' }, line1),
       line2 ? h('div', { class: 'tl-line' }, line2) : null,
+      heldLabel(w) ? h('div', { class: 'tl-line tl-held' }, heldLabel(w)) : null,
       h('span', { class: 'pill status-' + w.status }, STATUS_LABEL[w.status])));
 }
 
@@ -627,12 +711,20 @@ function renderDetail() {
   if (!photos.some((p) => p.id === state.photoId)) state.photoId = photos[0]?.id ?? null;
   const selected = photos.find((p) => p.id === state.photoId);
   const fileInput = h('input', { type: 'file', accept: 'image/*', multiple: true, hidden: true, 'aria-label': 'Choose photos', onchange: (e) => uploadPhotos(w.id, [...e.target.files]) });
+  const openAt = (id) => openViewer(photos, photos.findIndex((p) => p.id === id), `${w.brand} ${w.model}`, (idx) => {
+    // Leave the page showing the photo that was viewed last.
+    if (photos[idx].id !== state.photoId) { state.photoId = photos[idx].id; renderDetail(); }
+    $('.hero-btn')?.focus();
+  });
   const gallery = h('div', { class: 'gallery' },
-    h('div', { class: 'hero' }, selected ? h('img', { src: '/api/photos/' + selected.id, alt: `${w.brand} ${w.model}` }) : 'No photos yet'),
+    selected
+      ? h('button', { class: 'hero hero-btn', type: 'button', 'aria-label': 'Open photo viewer', onclick: () => openAt(selected.id) },
+        h('img', { src: '/api/photos/' + selected.id, alt: `${w.brand} ${w.model}` }))
+      : h('div', { class: 'hero' }, 'No photos yet'),
     h('div', { class: 'thumbs' },
       photos.map((p, i) => h('button', {
-        type: 'button', 'aria-label': `Show photo ${i + 1}`, 'aria-current': String(p.id === state.photoId),
-        onclick: () => { state.photoId = p.id; renderDetail(); },
+        type: 'button', 'aria-label': `Open photo ${i + 1} of ${photos.length}`, 'aria-current': String(p.id === state.photoId),
+        onclick: () => openAt(p.id),
       }, h('img', { src: '/api/photos/' + p.id, alt: '' }))),
       h('button', { class: 'add-photo', type: 'button', onclick: () => fileInput.click() }, '+ Add'),
       fileInput),
@@ -713,6 +805,7 @@ function renderDetail() {
       kv('Status', h('span', { class: 'pill ' + (LISTING[w.listing_status] || LISTING.listed)[1] }, (LISTING[w.listing_status] || LISTING.listed)[0])),
       kv('Asking price', money(w.asking_price_cents)), kv('Platform', w.listing_platform || '—'),
       kv('Listed', w.listed_date ? `${fmtDate(w.listed_date)} (${d} days)` : '—')));
+    boxes.push(ebayBox(w, state.detail.ebay));
     boxes.push(offersBox(w, offers));
   }
   if (w.status === 'sold') {
@@ -752,13 +845,94 @@ function offersBox(w, offers) {
   const lines = offers.length
     ? offers.map((o) => h('div', { class: 'offer-line' },
       h('div', { class: 'top' }, h('strong', {}, money(o.amount_cents)), h('span', {}, `${cap(o.status)} · ${fmtDate(o.offered_on)}`)),
-      o.offered_by ? h('div', {}, `From ${o.offered_by}`) : null,
-      h('div', { class: 'btns' },
-        o.status === 'open' ? h('button', { class: 'btn small', type: 'button', onclick: () => offerAction(o.id, 'PUT', { status: 'accepted' }, 'Offer accepted') }, 'Accept') : null,
-        o.status === 'open' ? h('button', { class: 'btn small', type: 'button', onclick: () => offerAction(o.id, 'PUT', { status: 'declined' }, 'Offer declined') }, 'Decline') : null,
-        h('button', { class: 'btn small danger', type: 'button', onclick: () => { if (confirm('Delete this offer?')) offerAction(o.id, 'DELETE', undefined, 'Offer deleted'); } }, 'Delete'))))
+      o.source === 'ebay' ? h('div', {}, 'Offer on eBay') : (o.offered_by ? h('div', {}, `From ${o.offered_by}`) : null),
+      o.source === 'ebay'
+        ? (o.status === 'open' ? h('div', { class: 'ebay-note' }, 'Respond to this offer on eBay. It updates here after the next sync.') : null)
+        : h('div', { class: 'btns' },
+          o.status === 'open' ? h('button', { class: 'btn small', type: 'button', onclick: () => offerAction(o.id, 'PUT', { status: 'accepted' }, 'Offer accepted') }, 'Accept') : null,
+          o.status === 'open' ? h('button', { class: 'btn small', type: 'button', onclick: () => offerAction(o.id, 'PUT', { status: 'declined' }, 'Offer declined') }, 'Decline') : null,
+          h('button', { class: 'btn small danger', type: 'button', onclick: () => { if (confirm('Delete this offer?')) offerAction(o.id, 'DELETE', undefined, 'Offer deleted'); } }, 'Delete'))))
     : [h('div', { class: 'empty-note' }, 'No offers yet.')];
   return box('Offers', lines, h('div', { class: 'foot' }, h('button', { class: 'btn small', type: 'button', onclick: () => addOffer(w) }, 'Add offer')));
+}
+
+const isEbayUrl = (u) => /^https:\/\/([\w-]+\.)*ebay\.[a-z.]+\//i.test(u || '');
+
+function ebayBox(w, ebay) {
+  const e = state.ebay;
+  if (!ebay) {
+    if (!e || !e.configured) return box('eBay listing', h('div', { class: 'empty-note' }, 'eBay is not set up yet. See the README to add your eBay keys.'));
+    if (!e.connected) return box('eBay listing', h('div', { class: 'empty-note' }, 'Connect eBay on the For sale page to pull views and offers for this watch.'),
+      h('div', { class: 'foot' }, h('a', { class: 'btn small', href: '/api/ebay/connect' }, 'Connect eBay')));
+    return box('eBay listing', h('div', { class: 'empty-note' }, 'Not linked to an eBay listing yet.'),
+      h('div', { class: 'foot' }, h('button', { class: 'btn small', type: 'button', onclick: () => linkEbayListing(w) }, 'Link eBay listing')));
+  }
+  const ended = ebay.status === 'ended';
+  const num = (v) => (v === null || v === undefined ? '—' : String(v));
+  return box('eBay listing',
+    ended ? h('div', { class: 'empty-note' }, 'This listing has ended on eBay. If it sold, mark the watch as sold; otherwise take it off the market or relist it.') : null,
+    kv('Listing', isEbayUrl(ebay.listing_url) ? h('a', { href: ebay.listing_url, target: '_blank', rel: 'noopener noreferrer' }, `View on eBay (${ebay.item_id})`) : ebay.item_id),
+    kv('eBay price', money(ebay.price_cents)),
+    kv('Views, last 7 days', num(ebay.views_7d)),
+    kv('Views, last 30 days', num(ebay.views_30d)),
+    kv('Impressions, 30 days', num(ebay.impressions_30d)),
+    kv('Watchers', num(ebay.watch_count)),
+    kv('Offers on eBay', ebay.best_offer_enabled ? num(ebay.best_offer_count) : 'Best Offer is off'),
+    kv(ended ? 'Ended' : 'Ends', ebay.end_time ? fmtDate(ebay.end_time.slice(0, 10)) : '—'),
+    kv('Last synced', timeAgo(ebay.synced_at)),
+    h('div', { class: 'foot' },
+      h('button', { class: 'btn small', type: 'button', onclick: (ev) => syncEbayNow(ev.currentTarget) }, 'Sync now'),
+      h('button', { class: 'btn small danger', type: 'button', onclick: () => unlinkEbayListing(w) }, 'Unlink')));
+}
+
+/* ---------- photo viewer ---------- */
+// Full-screen overlay for a watch's photos. Left/right arrow keys (or the buttons,
+// or a swipe on a touch screen) move between photos; Escape or a click outside closes it.
+function openViewer(photos, startIndex, label, onClose) {
+  let i = Math.max(0, startIndex);
+  const img = h('img', { class: 'vw-img' });
+  const count = h('div', { class: 'vw-count', 'aria-live': 'polite' });
+  const single = photos.length < 2;
+  const go = (d) => { i = (i + d + photos.length) % photos.length; show(); };
+  const navBtn = (cls, text, aria, d) => h('button', { class: 'vw-nav ' + cls, type: 'button', 'aria-label': aria, hidden: single, onclick: () => go(d) }, text);
+  const closeBtn = h('button', { class: 'vw-close', type: 'button', 'aria-label': 'Close photo viewer', onclick: () => dlg.close() }, '×');
+  const dlg = h('dialog', { class: 'viewer', 'aria-label': `Photos of ${label}` },
+    closeBtn,
+    h('div', { class: 'vw-cap' }, label),
+    navBtn('prev', '‹', 'Previous photo', -1),
+    h('figure', { class: 'vw-fig' }, img),
+    navBtn('next', '›', 'Next photo', 1),
+    count);
+
+  function show() {
+    img.classList.remove('ready');
+    img.alt = `${label}, photo ${i + 1} of ${photos.length}`;
+    img.src = '/api/photos/' + photos[i].id;
+    count.textContent = `${i + 1} / ${photos.length}`;
+    for (const d of [-1, 1]) new Image().src = '/api/photos/' + photos[(i + d + photos.length) % photos.length].id;
+  }
+  img.addEventListener('load', () => img.classList.add('ready'));
+
+  dlg.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowLeft') { e.preventDefault(); if (!single) go(-1); }
+    else if (e.key === 'ArrowRight') { e.preventDefault(); if (!single) go(1); }
+    else if (e.key === 'Home') { e.preventDefault(); i = 0; show(); }
+    else if (e.key === 'End') { e.preventDefault(); i = photos.length - 1; show(); }
+  });
+  dlg.addEventListener('click', (e) => { if (e.target === dlg || e.target.classList.contains('vw-fig')) dlg.close(); });
+  let startX = null;
+  dlg.addEventListener('touchstart', (e) => { startX = e.touches[0].clientX; }, { passive: true });
+  dlg.addEventListener('touchend', (e) => {
+    if (startX === null || single) return;
+    const dx = e.changedTouches[0].clientX - startX;
+    startX = null;
+    if (Math.abs(dx) > 50) go(dx < 0 ? 1 : -1);
+  });
+  dlg.addEventListener('close', () => { dlg.remove(); onClose(i); });
+
+  show();
+  document.body.append(dlg);
+  dlg.showModal();
 }
 
 /* ---------- actions ---------- */
@@ -819,6 +993,68 @@ async function deleteWatch(w) {
     location.hash = '#/' + backTarget(w).key;
     toast('Watch deleted');
   });
+}
+
+function rerender() {
+  const r = state.route;
+  if (r.name === 'detail') return reloadDetail();
+  if (r.name === 'timeline') return showTimeline();
+  return showSection(r.name);
+}
+
+async function syncEbayNow(btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Syncing…'; }
+  try {
+    const r = await api('POST', '/ebay/sync');
+    await Promise.all([refresh(), loadEbayStatus()]);
+    await rerender();
+    if (r.skipped) toast(r.message);
+    else if (r.warnings?.length) toast(`Synced with a warning: ${r.warnings[0]}`, true);
+    else toast(`Synced ${r.listings} eBay ${r.listings === 1 ? 'listing' : 'listings'}`);
+  } catch (err) {
+    await loadEbayStatus();
+    await rerender();
+    toast(err.message, true);
+  }
+}
+
+async function disconnectEbay() {
+  if (!confirm('Disconnect eBay? Views and offers stop updating. Your watches are not affected.')) return;
+  await guarded(async () => { await api('POST', '/ebay/disconnect'); await loadEbayStatus(); await rerender(); }, 'eBay disconnected');
+}
+
+// Suggests the listing whose title mentions the watch's brand and model (or its reference number).
+function suggestListing(w, listings) {
+  const words = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter(Boolean);
+  const needle = words(`${w.brand} ${w.model}`);
+  const ref = (w.reference_number || '').toLowerCase();
+  return listings.find((l) => {
+    const hay = words(l.title);
+    return (needle.length && needle.every((t) => hay.includes(t))) || (ref.length > 2 && l.title.toLowerCase().includes(ref));
+  }) || null;
+}
+
+async function linkEbayListing(w) {
+  let listings;
+  try { ({ listings } = await api('GET', '/ebay/listings')); } catch (err) { toast(err.message, true); return; }
+  const free = listings.filter((l) => !l.watch_id);
+  if (!free.length) { toast('No unlinked eBay listings found. Use Sync now on the For sale page, then try again.', true); return; }
+  const guess = suggestListing(w, free);
+  openForm({
+    title: 'Link eBay listing', submitLabel: 'Link listing',
+    hint: guess ? 'I picked the listing whose title matches this watch. Change it if it is wrong.' : 'Pick the eBay listing for this watch.',
+    groups: [{ fields: [{
+      name: 'item_id', label: 'Your eBay listing', type: 'select', required: true,
+      options: [['', 'Choose a listing…'], ...free.map((l) => [l.item_id, `${l.title} · ${money(l.price_cents)}`])],
+    }] }],
+    values: { item_id: guess ? guess.item_id : '' },
+    onSubmit: async (v) => { await api('POST', `/watches/${w.id}/ebay`, { item_id: v.item_id }); await reloadDetail(); toast('eBay listing linked'); },
+  });
+}
+
+async function unlinkEbayListing(w) {
+  if (!confirm('Unlink this eBay listing? The watch stays for sale; views and offers from eBay stop updating.')) return;
+  await guarded(async () => { await api('DELETE', `/watches/${w.id}/ebay`); await reloadDetail(); }, 'Listing unlinked');
 }
 
 function listForSale(w) {
@@ -1136,6 +1372,7 @@ async function route() {
     main.replaceChildren(h('p', { class: 'loading' }, 'Loading your watches…'));
     try {
       await refresh();
+      await loadEbayStatus();
     } catch (err) {
       if (token !== routeToken) return;
       main.replaceChildren(h('div', { class: 'empty' }, h('h2', {}, 'Could not load your watches'), h('p', {}, err.message),
@@ -1157,6 +1394,22 @@ async function route() {
   window.scrollTo(0, 0);
 }
 
+// eBay sends you back here after you approve (or decline) the connection.
+async function handleEbayReturn() {
+  const p = new URLSearchParams(location.search);
+  if (!p.has('ebay')) return;
+  history.replaceState(null, '', location.pathname + location.hash);
+  if (p.get('ebay') === 'connected') {
+    toast('eBay connected. Syncing your listings…');
+    await loadEbayStatus();
+    await syncEbayNow();
+  } else {
+    await loadEbayStatus();
+    await rerender();
+    toast(p.get('msg') || 'Could not connect to eBay.', true);
+  }
+}
+
 renderShell();
 window.addEventListener('hashchange', route);
-route();
+route().then(handleEbayReturn);

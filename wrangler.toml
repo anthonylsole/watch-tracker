@@ -16,7 +16,7 @@ binding = "ASSETS"
 [[d1_databases]]
 binding = "DB"
 database_name = "watch-tracker-db"
-database_id = "3f28a66b-c2e6-4f40-9949-8c276825cb35"
+database_id = "PASTE-YOUR-D1-DATABASE-ID-HERE"
 
 # R2 bucket for watch photos.
 [[r2_buckets]]
@@ -25,3 +25,18 @@ bucket_name = "watch-tracker-images"
 
 [observability]
 enabled = true
+
+# ---- eBay (optional): pulls views and offers for your own listings ----
+# Set these three as Secrets on the Worker in the Cloudflare dashboard (not here):
+#   EBAY_CLIENT_ID      your eBay App ID (Client ID)
+#   EBAY_CLIENT_SECRET  your eBay Cert ID (Client Secret)
+#   EBAY_TOKEN_KEY      any long random string (32+ characters); encrypts the saved eBay sign-in
+[vars]
+EBAY_ENV = "production"
+EBAY_RU_NAME = "PASTE-YOUR-EBAY-RUNAME-HERE"
+EBAY_SITE_ID = "0"
+EBAY_MARKETPLACE = "EBAY_US"
+
+# Refreshes eBay data every hour once eBay is connected.
+[triggers]
+crons = ["0 * * * *"]
