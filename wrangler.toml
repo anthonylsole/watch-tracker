@@ -16,7 +16,7 @@ binding = "ASSETS"
 [[d1_databases]]
 binding = "DB"
 database_name = "watch-tracker-db"
-database_id = "PASTE-YOUR-D1-DATABASE-ID-HERE"
+database_id = "3f28a66b-c2e6-4f40-9949-8c276825cb35"
 
 # R2 bucket for watch photos.
 [[r2_buckets]]
