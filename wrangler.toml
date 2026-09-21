@@ -33,7 +33,7 @@ enabled = true
 #   EBAY_TOKEN_KEY      any long random string (32+ characters); encrypts the saved eBay sign-in
 [vars]
 EBAY_ENV = "production"
-EBAY_RU_NAME = "PASTE-YOUR-EBAY-RUNAME-HERE"
+EBAY_RU_NAME = "Anthony_Sole-AnthonyS-WatchT-siejs"
 EBAY_SITE_ID = "0"
 EBAY_MARKETPLACE = "EBAY_US"
 
