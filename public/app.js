@@ -143,6 +143,17 @@ function viewsCell(w) {
   if (w.ebay_views_30d === null || w.ebay_views_30d === undefined) return '—';
   return h('span', {}, String(w.ebay_views_30d), w.ebay_views_7d !== null && w.ebay_views_7d !== undefined ? h('small', { class: 'sub' }, `${w.ebay_views_7d} in 7 days`) : null);
 }
+// Click-through rate = search-results views / search-results impressions (like for like).
+const ctrOf = (views, imps) => (imps > 0 && views !== null && views !== undefined ? views / imps : null);
+const pct = (f) => (f === null || f === undefined ? '—' : `${(f * 100).toFixed(f < 0.1 ? 2 : 1)}%`);
+const intFmt = new Intl.NumberFormat('en-US');
+const int = (n) => (n === null || n === undefined ? '—' : intFmt.format(n));
+const listCtr = (w) => ctrOf(w.ebay_search_views_30d, w.ebay_search_impressions_30d);
+function ctrCell(w) {
+  const c = listCtr(w);
+  if (c === null) return '—';
+  return h('span', {}, pct(c), h('small', { class: 'sub' }, `${int(w.ebay_search_impressions_30d)} impr.`));
+}
 function offerCell(w) {
   if (!w.open_offers) return w.best_offer_cents ? money(w.best_offer_cents) : '—';
   return h('span', {}, money(w.best_offer_cents), h('small', { class: 'sub' }, `${w.open_offers} open`));
@@ -152,6 +163,7 @@ function ebayLine(w) {
   if (w.ebay_status === 'ended') return 'Listing ended on eBay';
   const parts = [];
   if (w.ebay_views_30d !== null && w.ebay_views_30d !== undefined) parts.push(`${w.ebay_views_30d} views (30d)`);
+  if (listCtr(w) !== null) parts.push(`${pct(listCtr(w))} CTR`);
   parts.push(`${w.open_offers || 0} ${w.open_offers === 1 ? 'offer' : 'offers'}`);
   return parts.join(' · ');
 }
@@ -217,11 +229,15 @@ const SECTIONS = {
     stats(ws) {
       const days = ws.map(daysListed).filter((d) => d !== null);
       const tracked = ws.filter((w) => w.ebay_item_id && w.ebay_status === 'active' && w.ebay_views_30d !== null);
+      const sv = ws.reduce((n, w) => n + (w.ebay_search_views_30d || 0), 0);
+      const si = ws.reduce((n, w) => n + (w.ebay_search_impressions_30d || 0), 0);
       return [
         ['Watches listed', String(ws.length)],
         ['Total asking', money(total(ws, (w) => w.asking_price_cents))],
         ['Open offers', String(ws.reduce((n, w) => n + (w.open_offers || 0), 0))],
-        tracked.length
+        si > 0
+          ? ['Click-through rate, 30 days', pct(ctrOf(sv, si))]
+          : tracked.length
           ? ['Views, last 30 days', String(tracked.reduce((n, w) => n + w.ebay_views_30d, 0))]
           : ['Avg. days listed', days.length ? String(Math.round(days.reduce((a, b) => a + b, 0) / days.length)) : '—'],
       ];
@@ -239,12 +255,13 @@ const SECTIONS = {
       ['asking', 'Asking price', by((w) => w.asking_price_cents, -1)],
       ['brand', 'Brand A–Z', by((w) => (w.brand + ' ' + w.model).toLowerCase())],
     ],
-    cols: '48px minmax(0,2.2fr) minmax(0,1.4fr) minmax(0,1.2fr) repeat(5,minmax(0,1fr)) 24px',
+    cols: '48px minmax(0,2.2fr) minmax(0,1.4fr) minmax(0,1.2fr) repeat(6,minmax(0,1fr)) 24px',
     columns: [
       ['Status', listingPill],
       ['Platform', (w) => w.listing_platform || '—'],
       ['Days listed', (w) => (daysListed(w) === null ? '—' : String(daysListed(w)))],
       ['Views (30d)', viewsCell],
+      ['CTR (30d)', ctrCell],
       ['Asking', (w) => money(w.asking_price_cents)],
       ['Paid', (w) => money(w.purchase_price_cents)],
       ['Best offer', offerCell],
@@ -817,6 +834,8 @@ function renderDetail() {
       kv('Gain / loss', w.outcome === 'sold' ? signedMoney(g) : '—', g === null || w.outcome !== 'sold' ? '' : g >= 0 ? 'pos' : 'neg'),
       kv('Time held', heldMonths(w) === null ? '—' : `${heldMonths(w)} mo`)));
   }
+  const ctr = ctrBox(w, state.detail.ebay, state.detail.traffic || []);
+  if (ctr) boxes.push(ctr);
   if (w.status !== 'wishlist') boxes.push(serviceBox(w, service));
 
   main.replaceChildren(
@@ -883,6 +902,156 @@ function ebayBox(w, ebay) {
     h('div', { class: 'foot' },
       h('button', { class: 'btn small', type: 'button', onclick: (ev) => syncEbayNow(ev.currentTarget) }, 'Sync now'),
       h('button', { class: 'btn small danger', type: 'button', onclick: () => unlinkEbayListing(w) }, 'Unlink')));
+}
+
+/* ---------- click-through rate ---------- */
+// CTR = search-results views / search-results impressions, per day, from eBay's traffic report.
+// History is stored per watch, so it stays after the watch sells.
+
+const CTR_RANGES = [['30', '30 days', 30], ['90', '90 days', 90], ['all', 'All', Infinity]];
+const dayAdd = (s, n) => { const d = parseDay(s); d.setDate(d.getDate() + n); return d.toLocaleDateString('en-CA'); };
+const fmtShort = (s) => parseDay(s).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
+// Sums a list of daily rows into one CTR (never averages daily percentages).
+function sumTraffic(rows) {
+  let sv = 0, si = 0, v = 0, i = 0, ew = 0, ewi = 0;
+  for (const r of rows) {
+    sv += r.search_views || 0; si += r.search_impressions || 0; v += r.views || 0; i += r.impressions || 0;
+    if (r.ebay_ctr !== null && r.ebay_ctr !== undefined && r.search_impressions > 0) { ew += r.ebay_ctr * r.search_impressions; ewi += r.search_impressions; }
+  }
+  return { search_views: sv, search_impressions: si, views: v, impressions: i, ctr: ctrOf(sv, si), ebay_ctr: ewi > 0 ? ew / ewi : null };
+}
+
+// Every calendar day from the first to the last stored day (days eBay had nothing for are empty).
+function dailySeries(traffic, rangeDays) {
+  if (!traffic.length) return [];
+  const byDay = new Map(traffic.map((r) => [r.report_date, r]));
+  const last = traffic[traffic.length - 1].report_date;
+  let first = traffic[0].report_date;
+  if (Number.isFinite(rangeDays)) { const from = dayAdd(last, -(rangeDays - 1)); if (from > first) first = from; }
+  const out = [];
+  for (let d = first; d <= last; d = dayAdd(d, 1)) {
+    const r = byDay.get(d);
+    out.push({ date: d, row: r || null, ctr: r ? ctrOf(r.search_views, r.search_impressions) : null });
+  }
+  return out;
+}
+
+function niceMax(v) {
+  if (!(v > 0)) return 0.01;
+  const steps = [0.005, 0.01, 0.02, 0.025, 0.05, 0.1, 0.2, 0.25, 0.5, 1];
+  return steps.find((s) => s >= v * 1.1) || 1;
+}
+
+function drawCtrChart(wrap, series) {
+  const W = Math.max(260, wrap.clientWidth), H = 200;
+  const m = { t: 12, r: 12, b: 28, l: 48 };
+  const iw = W - m.l - m.r, ih = H - m.t - m.b;
+  const n = series.length;
+  const max = niceMax(Math.max(0, ...series.map((d) => d.ctr ?? 0)));
+  const x = (i) => m.l + (n <= 1 ? iw / 2 : (i / (n - 1)) * iw);
+  const y = (v) => m.t + ih - (v / max) * ih;
+  const ticks = [0, max / 2, max];
+
+  // Line segments break on days with no search impressions.
+  const segs = [];
+  let cur = [];
+  series.forEach((d, i) => {
+    if (d.ctr === null) { if (cur.length) segs.push(cur); cur = []; }
+    else cur.push(`${x(i).toFixed(1)},${y(d.ctr).toFixed(1)}`);
+  });
+  if (cur.length) segs.push(cur);
+  const lines = segs.map((pts) => pts.length === 1
+    ? `<circle cx="${pts[0].split(',')[0]}" cy="${pts[0].split(',')[1]}" r="3" class="ctr-dot"/>`
+    : `<polyline points="${pts.join(' ')}" class="ctr-line"/>`).join('');
+  const xIdx = n <= 1 ? [0] : [...new Set([0, Math.floor((n - 1) / 2), n - 1])];
+  const xLabels = xIdx.map((i) => `<text x="${x(i)}" y="${H - 8}" text-anchor="${i === 0 && n > 1 ? 'start' : i === n - 1 && n > 1 ? 'end' : 'middle'}">${fmtShort(series[i].date)}</text>`).join('');
+  const grid = ticks.map((t) => `<line x1="${m.l}" x2="${W - m.r}" y1="${y(t)}" y2="${y(t)}" class="${t === 0 ? 'ctr-base' : 'ctr-grid'}"/><text x="${m.l - 8}" y="${y(t) + 4}" text-anchor="end">${pct(t)}</text>`).join('');
+
+  wrap.innerHTML = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="Daily click-through rate, ${fmtShort(series[0].date)} to ${fmtShort(series[n - 1].date)}">
+    <g class="ctr-axis">${grid}${xLabels}</g>${lines}
+    <line class="ctr-cross" x1="0" x2="0" y1="${m.t}" y2="${m.t + ih}" visibility="hidden"/>
+    <circle class="ctr-hover" r="5" visibility="hidden"/>
+    <rect class="ctr-hit" x="${m.l}" y="0" width="${iw}" height="${H}" fill="transparent"/></svg>
+    <div class="ctr-tip" hidden></div>`;
+
+  const svg = wrap.querySelector('svg'), tip = wrap.querySelector('.ctr-tip');
+  const cross = svg.querySelector('.ctr-cross'), dot = svg.querySelector('.ctr-hover');
+  const hide = () => { tip.hidden = true; cross.setAttribute('visibility', 'hidden'); dot.setAttribute('visibility', 'hidden'); };
+  const show = (clientX) => {
+    const r = svg.getBoundingClientRect();
+    const i = n <= 1 ? 0 : Math.max(0, Math.min(n - 1, Math.round(((clientX - r.left - m.l) / iw) * (n - 1))));
+    const d = series[i];
+    cross.setAttribute('x1', x(i)); cross.setAttribute('x2', x(i)); cross.setAttribute('visibility', 'visible');
+    if (d.ctr !== null) { dot.setAttribute('cx', x(i)); dot.setAttribute('cy', y(d.ctr)); dot.setAttribute('visibility', 'visible'); }
+    else dot.setAttribute('visibility', 'hidden');
+    tip.replaceChildren();
+    add(tip, [
+      h('div', { class: 'tip-date' }, fmtDate(d.date)),
+      d.row
+        ? [h('div', { class: 'tip-big' }, d.ctr === null ? 'No search impressions' : `${pct(d.ctr)} CTR`),
+          h('div', {}, `${int(d.row.search_views)} views from ${int(d.row.search_impressions)} search impressions`),
+          d.row.ebay_ctr !== null && d.row.ebay_ctr !== undefined ? h('div', { class: 'tip-muted' }, `eBay's figure: ${pct(d.row.ebay_ctr)}`) : null]
+        : h('div', { class: 'tip-muted' }, 'No data from eBay')]);
+    tip.hidden = false;
+    const tx = x(i) + 12 + tip.offsetWidth > W ? x(i) - 12 - tip.offsetWidth : x(i) + 12;
+    tip.style.left = `${Math.max(0, tx)}px`;
+  };
+  const hit = svg.querySelector('.ctr-hit');
+  hit.addEventListener('pointermove', (e) => show(e.clientX));
+  hit.addEventListener('pointerdown', (e) => show(e.clientX));
+  hit.addEventListener('pointerleave', hide);
+}
+
+function ctrBox(w, ebay, traffic) {
+  const hasData = traffic.some((r) => r.search_impressions > 0 || r.impressions > 0);
+  if (!hasData) {
+    if (w.status === 'for_sale' && ebay) {
+      return h('section', { class: 'box ctr-box' }, h('h2', {}, 'Click-through rate'),
+        h('div', { class: 'empty-note' }, 'Daily history loads with the next eBay sync. Choose Sync now in the eBay listing box to load it straight away.'));
+    }
+    return null;
+  }
+  const ui = (state.ctrRange ||= '30');
+  const range = CTR_RANGES.find(([k]) => k === ui) || CTR_RANGES[0];
+  const series = dailySeries(traffic, range[2]);
+  const t = sumTraffic(series.map((d) => d.row).filter(Boolean));
+  const all = sumTraffic(traffic);
+  const rangeLabel = range[0] === 'all' ? 'all time' : `last ${range[1]}`;
+
+  const chartWrap = h('div', { class: 'ctr-chart' });
+  const table = h('details', { class: 'ctr-table' }, h('summary', {}, 'Daily numbers'),
+    h('div', { class: 'ctr-scroll' }, h('table', {},
+      h('thead', {}, h('tr', {}, ['Day', 'Search impr.', 'Search views', 'CTR', "eBay's CTR", 'All impr.', 'All views'].map((c) => h('th', { scope: 'col' }, c)))),
+      h('tbody', {}, [...series].reverse().filter((d) => d.row).map((d) => h('tr', {},
+        h('td', {}, fmtDate(d.date)), h('td', {}, int(d.row.search_impressions)), h('td', {}, int(d.row.search_views)),
+        h('td', {}, pct(d.ctr)), h('td', {}, pct(d.row.ebay_ctr)), h('td', {}, int(d.row.impressions)), h('td', {}, int(d.row.views))))))));
+
+  const boxEl = h('section', { class: 'box ctr-box' },
+    h('div', { class: 'ctr-head' },
+      h('h2', {}, 'Click-through rate'),
+      h('div', { class: 'ctr-seg', role: 'group', 'aria-label': 'Date range' }, CTR_RANGES.map(([k, label]) => h('button', {
+        type: 'button', 'aria-pressed': String(k === range[0]), onclick: () => { state.ctrRange = k; renderDetail(); },
+      }, label)))),
+    h('div', { class: 'ctr-figs' },
+      h('div', { class: 'ctr-fig' }, h('div', { class: 'k' }, `CTR, ${rangeLabel}`), h('div', { class: 'v' }, pct(t.ctr)),
+        h('div', { class: 's' }, `${int(t.search_views)} views from ${int(t.search_impressions)} search impressions`)),
+      h('div', { class: 'ctr-fig' }, h('div', { class: 'k' }, `eBay's figure, ${rangeLabel}`), h('div', { class: 'v' }, pct(t.ebay_ctr)),
+        h('div', { class: 's' }, 'Reported by eBay, for comparison')),
+      range[0] === 'all' ? null : h('div', { class: 'ctr-fig' }, h('div', { class: 'k' }, w.status === 'sold' ? 'CTR, whole listing' : 'CTR, since listed'), h('div', { class: 'v' }, pct(all.ctr)),
+        h('div', { class: 's' }, `${int(all.search_views)} views from ${int(all.search_impressions)} search impressions`))),
+    chartWrap,
+    h('p', { class: 'ctr-note' }, 'Search views ÷ search impressions, by day. Gaps are days with no search impressions. eBay reports each day about a day late.'),
+    table);
+
+  // Draw once the box is on the page, and redraw when its width changes.
+  requestAnimationFrame(() => {
+    if (!chartWrap.isConnected) return;
+    drawCtrChart(chartWrap, series);
+    let lastW = chartWrap.clientWidth;
+    new ResizeObserver(() => { if (chartWrap.isConnected && chartWrap.clientWidth !== lastW) { lastW = chartWrap.clientWidth; drawCtrChart(chartWrap, series); } }).observe(chartWrap);
+  });
+  return boxEl;
 }
 
 /* ---------- photo viewer ---------- */

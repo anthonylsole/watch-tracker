@@ -5,6 +5,7 @@
 //      (you approve once; the Worker keeps an encrypted refresh token in D1).
 //   2. Pulls your active listings (Trading API: GetMyeBaySelling), views and
 //      impressions (Sell Analytics: traffic_report) and Best Offers (GetBestOffers).
+//      Daily traffic is kept per listing so click-through rate can be charted over time.
 //   3. Stores them in D1 so the For sale pages can show them next to your own numbers.
 //
 // It never writes anything to eBay and never stores buyer names.
@@ -299,24 +300,34 @@ async function fetchActiveListings(cfg, token) {
 const chunks = (list, n) => Array.from({ length: Math.ceil(list.length / n) }, (_, i) => list.slice(i * n, i * n + n));
 const yyyymmdd = (d) => d.toISOString().slice(0, 10).replace(/-/g, '');
 
+// One call to eBay's traffic report. Returns [{ key, row }] where key is the listing ID
+// (dimension LISTING) or the day as YYYY-MM-DD (dimension DAY), and row maps metric -> value.
+async function trafficReport(cfg, token, { dimension, ids, start, end, metrics }) {
+  const filter = `marketplace_ids:{${cfg.marketplace}},date_range:[${start}..${end}],listing_ids:{${ids.join('|')}}`;
+  const url = `${cfg.apiBase}/sell/analytics/v1/traffic_report?dimension=${dimension}&metric=${metrics.join(',')}&filter=${encodeURIComponent(filter)}`;
+  const res = await fetch(url, { headers: { authorization: `Bearer ${token}`, accept: 'application/json' } });
+  const data = await res.json().catch(() => null);
+  if (!res.ok || !data) {
+    const e = data?.errors?.[0];
+    throw new EbayError(`eBay traffic report: ${e?.longMessage || e?.message || `HTTP ${res.status}`}`);
+  }
+  const keys = (data.header?.metrics || []).map((m) => m.key);
+  const out = [];
+  for (const rec of data.records || []) {
+    let key = String(rec.dimensionValues?.[0]?.value ?? '');
+    if (dimension === 'DAY') key = /^\d{8}$/.test(key) ? `${key.slice(0, 4)}-${key.slice(4, 6)}-${key.slice(6, 8)}` : key.slice(0, 10);
+    const row = {};
+    (rec.metricValues || []).forEach((mv, i) => { row[keys[i]] = mv?.value; });
+    if (key) out.push({ key, row });
+  }
+  return out;
+}
+
 async function fetchTraffic(cfg, token, ids, start, end) {
   const out = new Map();
   for (const group of chunks(ids, 200)) {
-    const filter = `marketplace_ids:{${cfg.marketplace}},date_range:[${start}..${end}],listing_ids:{${group.join('|')}}`;
-    const url = `${cfg.apiBase}/sell/analytics/v1/traffic_report?dimension=LISTING&metric=LISTING_VIEWS_TOTAL,LISTING_IMPRESSION_TOTAL&filter=${encodeURIComponent(filter)}`;
-    const res = await fetch(url, { headers: { authorization: `Bearer ${token}`, accept: 'application/json' } });
-    const data = await res.json().catch(() => null);
-    if (!res.ok || !data) {
-      const e = data?.errors?.[0];
-      throw new EbayError(`eBay traffic report: ${e?.longMessage || e?.message || `HTTP ${res.status}`}`);
-    }
-    const keys = (data.header?.metrics || []).map((m) => m.key);
-    for (const rec of data.records || []) {
-      const id = String(rec.dimensionValues?.[0]?.value ?? '');
-      const row = {};
-      (rec.metricValues || []).forEach((mv, i) => { row[keys[i]] = mv?.value; });
-      if (id) out.set(id, row);
-    }
+    const recs = await trafficReport(cfg, token, { dimension: 'LISTING', ids: group, start, end, metrics: ['LISTING_VIEWS_TOTAL', 'LISTING_IMPRESSION_TOTAL'] });
+    for (const { key, row } of recs) out.set(key, row);
   }
   return out;
 }
@@ -330,6 +341,128 @@ async function fetchBestOffers(cfg, token, itemId) {
     amount_cents: toCents(o.Price),
     status: OFFER_STATUS[txt(o.Status)] || 'expired',
   })).filter((o) => o.external_id && o.amount_cents);
+}
+
+/* ------------------------------------------------ daily traffic history */
+//
+// Click-through rate in the app = search-results views / search-results impressions.
+// Both numbers come from the same place (eBay search), so the ratio is like for like.
+// eBay's own CLICK_THROUGH_RATE is stored alongside it for comparison.
+//
+// Two kinds of calls keep eBay usage low:
+//   * Backfill: once per listing, one DAY report covering up to 90 days of history.
+//   * Top-up:   one LISTING report per day for the last few days (eBay revises recent days),
+//               covering up to 200 listings per call.
+
+const DAILY_METRICS = [
+  'LISTING_IMPRESSION_TOTAL',
+  'LISTING_VIEWS_TOTAL',
+  'LISTING_IMPRESSION_SEARCH_RESULTS_PAGE',
+  'LISTING_VIEWS_SOURCE_SEARCH_RESULTS_PAGE',
+  'CLICK_THROUGH_RATE',
+];
+const TOPUP_DAYS = 3;          // re-pull this many recent days each time
+const BACKFILL_MAX_DAYS = 90;  // eBay's longest date range per call
+const BACKFILL_PER_RUN = 10;   // listings backfilled per sync, to stay under eBay's daily call limit
+
+const isoDay = (d) => d.toISOString().slice(0, 10);
+const addDays = (d, n) => new Date(d.getTime() + n * 86400000);
+const metric = (row, k) => { const v = Number(row?.[k]); return Number.isFinite(v) ? Math.round(v) : 0; };
+
+// eBay's CTR can come back as a fraction (0.012) or a percentage (1.2). Store a fraction.
+export function ctrFraction(raw, searchViews, searchImpressions) {
+  const v = Number(raw);
+  if (raw === null || raw === undefined || raw === '' || !Number.isFinite(v) || v < 0) return null;
+  if (v > 1) return v / 100;
+  if (searchImpressions > 0 && searchViews > 0 && v > (searchViews / searchImpressions) * 20) return v / 100;
+  return v;
+}
+
+function trafficRow(row) {
+  const search_impressions = metric(row, 'LISTING_IMPRESSION_SEARCH_RESULTS_PAGE');
+  const search_views = metric(row, 'LISTING_VIEWS_SOURCE_SEARCH_RESULTS_PAGE');
+  return {
+    impressions: metric(row, 'LISTING_IMPRESSION_TOTAL'),
+    views: metric(row, 'LISTING_VIEWS_TOTAL'),
+    search_impressions,
+    search_views,
+    ebay_ctr: ctrFraction(row?.CLICK_THROUGH_RATE, search_views, search_impressions),
+  };
+}
+
+function saveTraffic(env, itemId, day, t) {
+  return env.DB.prepare(
+    `INSERT INTO ebay_listing_traffic (item_id, report_date, watch_id, impressions, views, search_impressions, search_views, ebay_ctr, synced_at)
+     VALUES (?, ?, COALESCE(
+       (SELECT watch_id FROM ebay_listings WHERE item_id = ?),
+       (SELECT t.watch_id FROM ebay_listing_traffic t WHERE t.item_id = ? AND t.watch_id IS NOT NULL ORDER BY t.report_date DESC LIMIT 1)
+     ), ?, ?, ?, ?, ?, datetime('now'))
+     ON CONFLICT (item_id, report_date) DO UPDATE SET
+       watch_id = COALESCE(excluded.watch_id, ebay_listing_traffic.watch_id),
+       impressions = excluded.impressions, views = excluded.views,
+       search_impressions = excluded.search_impressions, search_views = excluded.search_views,
+       ebay_ctr = excluded.ebay_ctr, synced_at = excluded.synced_at`
+  ).bind(itemId, day, itemId, itemId, t.impressions, t.views, t.search_impressions, t.search_views, t.ebay_ctr);
+}
+
+// eBay's newest complete day can trail by a day; if the latest day is refused, step back one.
+async function withDateFallback(fn, end) {
+  try {
+    return await fn(end);
+  } catch (err) {
+    if (err instanceof EbayError && /date/i.test(err.message)) return fn(addDays(end, -1));
+    throw err;
+  }
+}
+
+async function syncDailyTraffic(env, cfg, token) {
+  const end = addDays(new Date(), -1);
+  const recentCutoff = isoDay(addDays(end, -TOPUP_DAYS - 2));
+  const oldestCutoff = isoDay(addDays(end, -BACKFILL_MAX_DAYS + 1));
+  const { results: listings } = await env.DB.prepare(
+    `SELECT item_id, start_time, end_time, status, traffic_backfilled_at FROM ebay_listings
+     WHERE status = 'active' OR substr(COALESCE(end_time, last_seen_at, ''), 1, 10) >= ?`
+  ).bind(oldestCutoff).all();
+  let rows = 0;
+
+  // 1) Backfill listings that have no history yet.
+  const toBackfill = listings.filter((l) => !l.traffic_backfilled_at).slice(0, BACKFILL_PER_RUN);
+  for (const l of toBackfill) {
+    const started = l.start_time ? new Date(l.start_time.slice(0, 10) + 'T00:00:00Z') : addDays(end, -BACKFILL_MAX_DAYS + 1);
+    const recs = await withDateFallback((e) => {
+      const from = new Date(Math.min(Math.max(started.getTime(), addDays(e, -BACKFILL_MAX_DAYS + 1).getTime()), e.getTime()));
+      return trafficReport(cfg, token, { dimension: 'DAY', ids: [l.item_id], start: yyyymmdd(from), end: yyyymmdd(e), metrics: DAILY_METRICS });
+    }, end);
+    await batch(env, [
+      ...recs.map(({ key, row }) => saveTraffic(env, l.item_id, key, trafficRow(row))),
+      env.DB.prepare("UPDATE ebay_listings SET traffic_backfilled_at = datetime('now') WHERE item_id = ?").bind(l.item_id),
+    ]);
+    rows += recs.length;
+  }
+
+  // 2) Top up the last few days for listings that are live or only just ended.
+  const recent = listings
+    .filter((l) => l.traffic_backfilled_at || toBackfill.includes(l))
+    .filter((l) => l.status === 'active' || (l.end_time || '').slice(0, 10) >= recentCutoff)
+    .map((l) => l.item_id);
+  if (recent.length) {
+    for (let i = TOPUP_DAYS - 1; i >= 0; i--) {
+      for (const group of chunks(recent, 200)) {
+        let recs;
+        try {
+          const day = yyyymmdd(addDays(end, -i));
+          recs = await trafficReport(cfg, token, { dimension: 'LISTING', ids: group, start: day, end: day, metrics: DAILY_METRICS });
+        } catch (err) {
+          if (i === 0 && err instanceof EbayError && /date/i.test(err.message)) continue; // yesterday not ready yet
+          throw err;
+        }
+        const day = isoDay(addDays(end, -i));
+        await batch(env, recs.map(({ key, row }) => saveTraffic(env, key, day, trafficRow(row))));
+        rows += recs.length;
+      }
+    }
+  }
+  return { backfilled: toBackfill.length, rows };
 }
 
 /* ---------------------------------------------------------- sync to D1 */
@@ -404,26 +537,36 @@ export async function syncEbay(env, { force = false, quiet = false } = {}) {
     ).bind(stamp, stamp).run();
     summary.ended = ended.meta?.changes ?? 0;
 
-    // 2) Views and impressions (refreshed every few hours; eBay limits this report to 100 calls a day)
+    // 2) Views, impressions and daily click-through history (refreshed every few hours; eBay limits this report to 100 calls a day)
     const trafficDue = force || !conn.last_traffic_sync_at
       || Date.now() - Date.parse(conn.last_traffic_sync_at.replace(' ', 'T') + 'Z') > TRAFFIC_REFRESH_HOURS * 3600 * 1000;
-    if (items.length && trafficDue) {
-      try {
-        const end = new Date(Date.now() - 86400000);
-        const start30 = new Date(end.getTime() - 29 * 86400000);
-        const start7 = new Date(end.getTime() - 6 * 86400000);
-        const ids = items.map((i) => i.item_id);
-        const [t30, t7] = [await fetchTraffic(cfg, token, ids, yyyymmdd(start30), yyyymmdd(end)), await fetchTraffic(cfg, token, ids, yyyymmdd(start7), yyyymmdd(end))];
-        const num = (row, k) => { const v = Number(row?.[k]); return Number.isFinite(v) ? Math.round(v) : 0; };
-        await batch(env, ids.map((id) => env.DB.prepare(
-          'UPDATE ebay_listings SET views_30d = ?, impressions_30d = ?, views_7d = ? WHERE item_id = ?'
-        ).bind(num(t30.get(id), 'LISTING_VIEWS_TOTAL'), num(t30.get(id), 'LISTING_IMPRESSION_TOTAL'), num(t7.get(id), 'LISTING_VIEWS_TOTAL'), id)));
-        await env.DB.prepare("UPDATE ebay_connection SET last_traffic_sync_at = datetime('now') WHERE id = 1").run();
-        summary.views = 'ok';
-      } catch (err) {
-        summary.views = 'failed';
-        summary.warnings.push(err instanceof EbayError ? err.message : 'Views could not be loaded.');
+    if (trafficDue) {
+      if (items.length) {
+        try {
+          const end = new Date(Date.now() - 86400000);
+          const start30 = new Date(end.getTime() - 29 * 86400000);
+          const start7 = new Date(end.getTime() - 6 * 86400000);
+          const ids = items.map((i) => i.item_id);
+          const [t30, t7] = [await fetchTraffic(cfg, token, ids, yyyymmdd(start30), yyyymmdd(end)), await fetchTraffic(cfg, token, ids, yyyymmdd(start7), yyyymmdd(end))];
+          const num = (row, k) => { const v = Number(row?.[k]); return Number.isFinite(v) ? Math.round(v) : 0; };
+          await batch(env, ids.map((id) => env.DB.prepare(
+            'UPDATE ebay_listings SET views_30d = ?, impressions_30d = ?, views_7d = ? WHERE item_id = ?'
+          ).bind(num(t30.get(id), 'LISTING_VIEWS_TOTAL'), num(t30.get(id), 'LISTING_IMPRESSION_TOTAL'), num(t7.get(id), 'LISTING_VIEWS_TOTAL'), id)));
+          summary.views = 'ok';
+        } catch (err) {
+          summary.views = 'failed';
+          summary.warnings.push(err instanceof EbayError ? err.message : 'Views could not be loaded.');
+        }
       }
+      // Daily history for click-through rate (kept even after a listing ends).
+      try {
+        summary.daily = await syncDailyTraffic(env, cfg, token);
+      } catch (err) {
+        summary.daily = 'failed';
+        if (!(err instanceof EbayError)) console.error(err);
+        summary.warnings.push(err instanceof EbayError ? err.message : 'Click-through history could not be loaded.');
+      }
+      await env.DB.prepare("UPDATE ebay_connection SET last_traffic_sync_at = datetime('now') WHERE id = 1").run();
     }
 
     // 3) Linked listings: offers, and keep the asking price in step with eBay

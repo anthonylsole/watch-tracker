@@ -219,7 +219,9 @@ const LIST_SQL = `
     (SELECT s.next_due_on FROM service_records s WHERE s.watch_id = w.id ORDER BY s.serviced_on DESC, s.id DESC LIMIT 1) AS next_service_due_on,
     el.item_id AS ebay_item_id, el.status AS ebay_status, el.listing_url AS ebay_url, el.price_cents AS ebay_price_cents,
     el.watch_count AS ebay_watchers, el.views_7d AS ebay_views_7d, el.views_30d AS ebay_views_30d,
-    el.end_time AS ebay_end_time, el.synced_at AS ebay_synced_at
+    el.end_time AS ebay_end_time, el.synced_at AS ebay_synced_at,
+    (SELECT SUM(t.search_views) FROM ebay_listing_traffic t WHERE t.watch_id = w.id AND t.report_date >= date('now', '-30 days')) AS ebay_search_views_30d,
+    (SELECT SUM(t.search_impressions) FROM ebay_listing_traffic t WHERE t.watch_id = w.id AND t.report_date >= date('now', '-30 days')) AS ebay_search_impressions_30d
   FROM watches w
   LEFT JOIN ebay_listings el ON el.id = (
     SELECT x.id FROM ebay_listings x WHERE x.watch_id = w.id ORDER BY (x.status = 'active') DESC, x.id DESC LIMIT 1)
@@ -233,13 +235,24 @@ async function listWatches(env) {
 async function loadWatch(env, id) {
   const watch = await env.DB.prepare('SELECT * FROM watches WHERE id = ?').bind(id).first();
   if (!watch) throw new HttpError(404, 'Watch not found.');
-  const [photos, service, offers, ebay] = await env.DB.batch([
+  const [photos, service, offers, ebay, traffic] = await env.DB.batch([
     env.DB.prepare('SELECT id, content_type, byte_size, sort_order FROM watch_photos WHERE watch_id = ? ORDER BY sort_order, id').bind(id),
     env.DB.prepare('SELECT * FROM service_records WHERE watch_id = ? ORDER BY serviced_on DESC, id DESC').bind(id),
     env.DB.prepare('SELECT * FROM offers WHERE watch_id = ? ORDER BY created_at DESC, id DESC').bind(id),
     env.DB.prepare("SELECT * FROM ebay_listings WHERE watch_id = ? ORDER BY (status = 'active') DESC, id DESC LIMIT 1").bind(id),
+    // Daily eBay traffic for this watch, across every listing it has had (relists add up by day).
+    env.DB.prepare(
+      `SELECT report_date, SUM(impressions) AS impressions, SUM(views) AS views,
+         SUM(search_impressions) AS search_impressions, SUM(search_views) AS search_views,
+         CASE WHEN SUM(CASE WHEN ebay_ctr IS NOT NULL THEN search_impressions END) > 0
+           THEN SUM(ebay_ctr * search_impressions) / SUM(CASE WHEN ebay_ctr IS NOT NULL THEN search_impressions END) END AS ebay_ctr
+       FROM ebay_listing_traffic WHERE watch_id = ? GROUP BY report_date ORDER BY report_date`
+    ).bind(id),
   ]);
-  return { watch, photos: photos.results, service_records: service.results, offers: offers.results, ebay: ebay.results[0] || null };
+  return {
+    watch, photos: photos.results, service_records: service.results, offers: offers.results,
+    ebay: ebay.results[0] || null, traffic: traffic.results,
+  };
 }
 
 async function getWatch(env, id) {
@@ -289,6 +302,7 @@ async function deleteWatch(env, id) {
   await watchExists(env, id);
   await env.DB.batch([
     env.DB.prepare('UPDATE ebay_listings SET watch_id = NULL WHERE watch_id = ?').bind(id),
+    env.DB.prepare('UPDATE ebay_listing_traffic SET watch_id = NULL WHERE watch_id = ?').bind(id),
     env.DB.prepare('DELETE FROM offers WHERE watch_id = ?').bind(id),
     env.DB.prepare('DELETE FROM service_records WHERE watch_id = ?').bind(id),
     env.DB.prepare('DELETE FROM watch_photos WHERE watch_id = ?').bind(id),
@@ -435,6 +449,7 @@ async function linkEbay(request, env, watchId) {
   await env.DB.batch([
     env.DB.prepare('UPDATE ebay_listings SET watch_id = NULL WHERE watch_id = ? AND item_id != ?').bind(watchId, itemId),
     env.DB.prepare('UPDATE ebay_listings SET watch_id = ? WHERE item_id = ?').bind(watchId, itemId),
+    env.DB.prepare('UPDATE ebay_listing_traffic SET watch_id = ? WHERE item_id = ?').bind(watchId, itemId),
     env.DB.prepare(
       `UPDATE watches SET listing_platform = 'eBay', asking_price_cents = COALESCE(?, asking_price_cents),
          listed_date = COALESCE(?, listed_date), updated_at = datetime('now') WHERE id = ?`
@@ -446,7 +461,11 @@ async function linkEbay(request, env, watchId) {
 
 async function unlinkEbay(env, watchId) {
   await watchExists(env, watchId);
-  await env.DB.prepare('UPDATE ebay_listings SET watch_id = NULL WHERE watch_id = ?').bind(watchId).run();
+  // Unlinking by hand means it was the wrong listing, so its click-through history leaves this watch too.
+  await env.DB.batch([
+    env.DB.prepare('UPDATE ebay_listing_traffic SET watch_id = NULL WHERE item_id IN (SELECT item_id FROM ebay_listings WHERE watch_id = ?)').bind(watchId),
+    env.DB.prepare('UPDATE ebay_listings SET watch_id = NULL WHERE watch_id = ?').bind(watchId),
+  ]);
   return json(await loadWatch(env, watchId));
 }
 
