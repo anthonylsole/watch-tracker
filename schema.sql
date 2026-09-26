@@ -139,10 +139,27 @@ CREATE TABLE IF NOT EXISTS ebay_listings (
   views_7d             INTEGER,
   views_30d            INTEGER,
   impressions_30d      INTEGER,
+  traffic_backfilled_at TEXT,                            -- when daily traffic history was first loaded
   status               TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'ended')),
   last_seen_at         TEXT,
   synced_at            TEXT,
   created_at           TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- One row per eBay listing per day (eBay's reporting day). Kept after a watch sells,
+-- so click-through history stays with the watch in Past.
+-- CTR in the app = search_views / search_impressions.
+CREATE TABLE IF NOT EXISTS ebay_listing_traffic (
+  item_id              TEXT NOT NULL,
+  report_date          TEXT NOT NULL,                        -- YYYY-MM-DD
+  watch_id             INTEGER REFERENCES watches (id) ON DELETE SET NULL,
+  impressions          INTEGER,                              -- LISTING_IMPRESSION_TOTAL
+  views                INTEGER,                              -- LISTING_VIEWS_TOTAL
+  search_impressions   INTEGER,                              -- LISTING_IMPRESSION_SEARCH_RESULTS_PAGE
+  search_views         INTEGER,                              -- LISTING_VIEWS_SOURCE_SEARCH_RESULTS_PAGE
+  ebay_ctr             REAL,                                 -- eBay's CLICK_THROUGH_RATE, as a fraction (0.012 = 1.2%)
+  synced_at            TEXT,
+  PRIMARY KEY (item_id, report_date)
 );
 
 CREATE INDEX IF NOT EXISTS idx_watches_status          ON watches (status);
@@ -151,3 +168,4 @@ CREATE INDEX IF NOT EXISTS idx_service_records_watch_id ON service_records (watc
 CREATE INDEX IF NOT EXISTS idx_offers_watch_id         ON offers (watch_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_offers_source_external_id ON offers (source, external_id);
 CREATE INDEX IF NOT EXISTS idx_ebay_listings_watch_id  ON ebay_listings (watch_id);
+CREATE INDEX IF NOT EXISTS idx_ebay_listing_traffic_watch_id ON ebay_listing_traffic (watch_id, report_date);

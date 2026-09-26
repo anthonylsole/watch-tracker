@@ -47,6 +47,15 @@ Read-only. The app can pull your active eBay listings, their views and your Best
 5. **Deploy**, open **For sale**, and choose **Connect eBay**. Approve access on eBay. The first sync runs by itself and then repeats every hour.
 6. On a for-sale watch, choose **Link eBay listing**. Its views, watchers and offers then show on the watch and on the For sale page.
 
+### Click-through rate (CTR)
+
+The app keeps eBay's traffic numbers for each listing, one row per day, in the `ebay_listing_traffic` table. CTR is **search-results views ÷ search-results impressions**, so both numbers come from eBay search. Totals are summed over the period before dividing; daily percentages are never averaged. eBay's own `CLICK_THROUGH_RATE` is stored next to it for comparison.
+
+- **Existing database:** run `migrations/2026-09-ebay-ctr.sql` once in the D1 console **before** deploying this version.
+- The first sync after a listing appears loads up to 90 days of its history. After that, every traffic refresh (every 6 hours) re-pulls the last 3 days, because eBay revises recent days.
+- History stays with the watch after it sells, so Past watches keep their CTR chart. Relisting the same watch adds to its history. Unlinking a listing by hand removes that listing's history from the watch.
+- The For sale page shows 30-day CTR per watch and overall. A watch's page shows the chart (30 days, 90 days or all) and a table of daily numbers.
+
 The permissions requested are read-only: the basic eBay scope, `sell.inventory.readonly` and `sell.analytics.readonly`. If a sync reports a permissions problem, the message on the For sale page is eBay's own wording.
 
 ## Protect it
